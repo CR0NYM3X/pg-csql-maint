@@ -1,1 +1,146 @@
 
+## 🛠️ ¿PARA QUÉ SIRVE EL ORQUESTADOR analyze?
+
+Es un **motor de mantenimiento asíncrono y paralelo para PostgreSQL** diseñado para mantener al optimizador de consultas en su punto máximo de rendimiento.
+
+* **Evita la degradación del sistema:** Automatiza el refresco de estadísticas (`ANALYZE`)  sin bloquear las transacciones activas de los usuarios.
+* **Control de recursos de bajo nivel:** Administra pools de hilos concurrentes, elimina procesos zombis automáticamente y realiza recolección de memoria (GC) para jamás saturar la RAM ni el CPU.
+* **Trazabilidad Forense:** Guarda un historial inmutable de cada intervención (filas afectadas, tiempos de ejecución y porcentaje de desfase `drift_pct`) en tablas de auditoría.
+
+---
+
+## 🚦 MODOS DE EJECUCIÓN (`p_job_type`)
+
+### 1. `'SMART'` (El Mantenimiento Quirúrgico Diario)
+
+* **¿Para qué sirve?:** Es el modo **inteligente y autónomo**. En lugar de procesar toda la base de datos a ciegas, lee la telemetría interna del motor (`pg_stat_user_tables`) y selecciona **única y exclusivamente las tablas que están "sucias" o desfasadas**.
+* **Criterio de selección:**
+* Ignora la "morralla" (tablas con menos de `p_min_rows` modificaciones; por defecto **1,000** filas).
+* Evalúa si sufrieron alta volatilidad (cambios mayor a `p_threshold_pct`; por defecto **5%**).
+* O si sufrieron un volumen masivo absoluto (más de **50,000** modificaciones sin importar el porcentaje).
+
+
+* **Caso de uso ideal:** **Mantenimiento nocturno programado de rutina** (vía `pg_cron` a la 1:00 AM o 2:00 AM). Procesa lo que se ensució en el día en cuestión de minutos, ahorrando ciclos de CPU y lecturas de disco SSD.
+
+---
+
+### 2. `'ALL'` (El Mantenimiento Masivo de Catálogo)
+
+* **¿Para qué sirve?:** Ejecuta un `ANALYZE` **sobre absolutamente todas las tablas de usuario** existentes en el catálogo, sin importar si sufrieron cambios o no.
+* **Criterio de selección:** Lee `pg_stat_user_tables` completo y ordena las tablas para procesar primero las que tienen mayor volumen de filas modificadas y vivas.
+* **Caso de uso ideal:** Mantenimientos profundos de **fin de semana** o ventanas de mantenimiento generales donde se requiere forzar la actualización del 100% de los histogramas del optimizador de la base de datos.
+
+---
+
+### 3. `'PRELOAD'` (La Recuperación de Emergencia en Fases)
+
+* **¿Para qué sirve?:** Emula el flag `--analyze-in-stages` del binario de Linux `vacuumdb`. Ejecuta **3 pasadas consecutivas de `ANALYZE` por cada tabla**, manipulando dinámicamente el parámetro `default_statistics_target`:
+1. *Fase 1 (`target = 1`):* Muestra ultra rápida para dar un mapa básico de inmediato.
+2. *Fase 2 (`target = 10`):* Muestra media para ajustar histogramas.
+3. *Fase 3 (`RESET target`):* Análisis profundo definitivo (target por defecto del servidor, usualmente 100).
+
+
+* **Caso de uso ideal:** **Exclusivo para escenarios post-desastre:** inmediatamente después de una restauración de base de datos (Point-in-Time Recovery), post-migración de servidor o al levantar un entorno desde cero, permitiendo que el planificador de consultas tenga estadísticas útiles de inmediato sin esperar a que termine un análisis completo.
+
+---
+ 
+### 📋 RESUMEN TÁCTICO DE INVOCACIÓN
+
+```sql
+-- 1. Mantenimiento Diario Autónomo (Recomendado)
+CALL public.sp_orchestrate_maintenance(p_job_type => 'SMART', p_parallel_workers => 4, p_verbose => TRUE);
+
+-- 2. Mantenimiento Masivo de Fin de Semana
+CALL public.sp_orchestrate_maintenance(p_job_type => 'ALL', p_parallel_workers => 8, p_verbose => FALSE);
+
+-- 3. Mantenimiento de Emergencia Post-Restauración
+CALL public.sp_orchestrate_maintenance(p_job_type => 'PRELOAD', p_parallel_workers => 8, p_verbose => TRUE);
+
+```
+
+
+
+
+### 🎮 EL MODO DE USO: DOS ESCENARIOS TÁCTICOS
+
+#### 1. El Bisturí (Prueba Visual en tu Consola)
+
+Lo lanzas con `TRUE` en tu DBeaver, se queda "trabado", pero te va imprimiendo un log hermoso en la pestaña de mensajes:
+
+```sql
+--- TU CONSOLA SE BLOQUEADA  hasta que termine de procesar todas las tablas.
+
+CALL public.sp_orchestrate_maintenance(
+    p_job_type         => 'SMART', 
+    p_parallel_workers => 4, 
+    p_verbose          => TRUE,
+    p_threshold_pct    => 0.05, 
+    p_min_rows         => 1000  -- <-- ¡ESTA ES LA CLAVE PARA TU LABORATORIO!
+);
+
+```
+
+**Resultado Visual Esperado:**
+
+```text
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR DE MANTENIMIENTO VANGUARD
+INFO:  TIPO: SMART | ACCIÓN: ANALYZE | HILOS: 4 | UMBRAL: %5.00 | MIN CAMBIOS: 1000
+INFO:  =========================================================
+INFO:  [+] JOB ID Asignado: 2
+INFO:  [+] Total de tablas que requieren intervención: 5
+INFO:  ---------------------------------------------------------
+INFO:     [>] LANZANDO -> Hilo 56479 asignado a Tabla: public.lab_sesiones (Task ID: 6)
+INFO:     [>] LANZANDO -> Hilo 56480 asignado a Tabla: public.lab_carritos (Task ID: 7)
+INFO:     [>] LANZANDO -> Hilo 56481 asignado a Tabla: public.lab_pedidos (Task ID: 8)
+INFO:     [>] LANZANDO -> Hilo 56482 asignado a Tabla: public.lab_logs_auditoria (Task ID: 9)
+INFO:     [✓] ÉXITO -> Tabla: public.lab_carritos (Task ID: 7)
+INFO:     [✓] ÉXITO -> Tabla: public.lab_logs_auditoria (Task ID: 9)
+INFO:     [✓] ÉXITO -> Tabla: public.lab_pedidos (Task ID: 8)
+INFO:     [✓] ÉXITO -> Tabla: public.lab_sesiones (Task ID: 6)
+INFO:     [>] LANZANDO -> Hilo 56483 asignado a Tabla: public.lab_inventario (Task ID: 10)
+INFO:     [✓] ÉXITO -> Tabla: public.lab_inventario (Task ID: 10)
+INFO:  ---------------------------------------------------------
+INFO:  [DBA SQUAD] ORQUESTACIÓN FINALIZADA CON ÉXITO.
+INFO:  Tiempo Total: 00:00:02.036088
+INFO:  =========================================================
+```
+
+#### 2. Modos Ejecuta y Suelta
+
+
+**MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
+```sql
+SELECT pid 
+FROM public.pg_background_launch(
+    'CALL public.sp_orchestrate_maintenance(
+        p_job_type         => ''SMART'', 
+        p_parallel_workers => 4, 
+        p_verbose          => FALSE, -- 👈 EL SILENCIADOR (Vital para modo fantasma)
+        p_threshold_pct    => 0.05, 
+        p_min_rows         => 1000
+    );'
+);
+```
+
+**MÉTODO 2: LA AUTOMATIZACIÓN ABSOLUTA (Vía pg_cron)**
+```SQL
+SELECT cron.schedule_in_database(
+    'vanguard_smart_analyze', -- Nombre del trabajo en Cron
+    '0 2 * * *',              -- Expresión Cron: Todos los días a las 02:00 AM
+    $$ 
+    CALL public.sp_orchestrate_maintenance(
+        p_job_type         => 'SMART', 
+        p_parallel_workers => 4, 
+        p_verbose          => FALSE, -- Silencioso, porque a las 2 AM nadie está mirando
+        p_threshold_pct    => 0.05, 
+        p_min_rows         => 1000
+    ); 
+    $$,
+    'tiendavirtual',          -- Base de datos objetivo
+    'postgres',               -- Usuario ejecutor
+    true                      -- Activo
+);
+```
+
+
