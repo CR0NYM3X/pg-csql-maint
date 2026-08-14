@@ -113,33 +113,41 @@ INFO:  =========================================================
 ```sql
 SELECT pid 
 FROM public.pg_background_launch(
-    'CALL public.sp_orchestrate_maintenance(
-        p_job_type         => ''SMART'', 
-        p_parallel_workers => 4, 
-        p_verbose          => FALSE, -- 👈 EL SILENCIADOR (Vital para modo fantasma)
-        p_threshold_pct    => 0.05, 
-        p_min_rows         => 1000
-    );'
+    $$
+      CALL public.sp_orchestrate_maintenance(
+          p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
+          p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
+          p_verbose          => FALSE,          -- Silencioso: Como se ejecuta en automático, no saturamos el log
+          p_threshold_pct    => 0.05,           -- Umbral del 5%: Solo toca la tabla si el 5% de sus datos cambiaron
+          p_min_rows         => 1000,           -- Filtro anti-morralla: Ignora tablas con menos de 1,000 cambios
+          p_cutoff_time      => '06:00:00'::TIME -- [KILL SWITCH]: Aborto automático a las 6:00 AM exactas
+      );
+    $$
 );
+
+
+
 ```
 
 **MÉTODO 2: LA AUTOMATIZACIÓN ABSOLUTA (Vía pg_cron)**
 ```SQL
+-- Programa el orquestador para que despierte todos los días a las 02:00 AM
 SELECT cron.schedule_in_database(
-    'vanguard_smart_analyze', -- Nombre del trabajo en Cron
-    '0 2 * * *',              -- Expresión Cron: Todos los días a las 02:00 AM
+    'vanguard_smart_analyze_daily', 
+    '0 2 * * *', 
     $$ 
     CALL public.sp_orchestrate_maintenance(
         p_job_type         => 'SMART', 
         p_parallel_workers => 4, 
-        p_verbose          => FALSE, -- Silencioso, porque a las 2 AM nadie está mirando
+        p_verbose          => FALSE, 
         p_threshold_pct    => 0.05, 
-        p_min_rows         => 1000
+        p_min_rows         => 1000,
+        p_cutoff_time      => '06:00:00'::TIME
     ); 
     $$,
-    'tiendavirtual',          -- Base de datos objetivo
-    'postgres',               -- Usuario ejecutor
-    true                      -- Activo
+    'mi_base_de_datos', 
+    'postgres', 
+    true
 );
 ```
 
