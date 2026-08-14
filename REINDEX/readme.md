@@ -1,7 +1,6 @@
 
 # 🛡️ pg-csql-reindex
-
-**Predictive Triage & Async Concurrent Reindexation Engine for Enterprise PostgreSQL.**
+ 
 
 **pg-csql-reindex** es el módulo especializado de reestructuración física para la capa de almacenamiento B-Tree en PostgreSQL. Diseñado bajo la doctrina *Zero-Trust* y *Zero-Downtime*, automatiza la reconstrucción de índices fragmentados (`REINDEX INDEX CONCURRENTLY`), elimina páginas vacías (*empty pages*) y caza índices corruptos o zombis (`indisvalid = false`) sin bloquear las transacciones activas de lectura o escritura de la aplicación.
 
