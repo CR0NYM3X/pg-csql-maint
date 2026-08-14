@@ -237,6 +237,10 @@ DECLARE
     v_processed INT := 0; v_sniped INT := 0;
     v_approx_free_mb NUMERIC;
 BEGIN
+
+   PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
+   -- configuracion de seguridad
+   PERFORM pg_catalog.set_config('search_path', 'public, pg_temp', true);
     -- Validar dependencia estricta del kernel
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple') THEN
         RAISE EXCEPTION 'CRÍTICO: La extensión "pgstattuple" no está instalada.';
@@ -342,6 +346,10 @@ DECLARE
     -- Variable en RAM O(1) para evitar conteos masivos a disco duro al final
     v_success_count INT := 0; 
 BEGIN
+   PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
+   -- configuracion de seguridad
+   PERFORM pg_catalog.set_config('search_path', 'public, pg_temp', true);
+   
     -- Regla de Negocio: VACUUM FULL es bloqueante exclusivo, se forza a 1 solo hilo de trabajo.
     IF p_profile IN ('VACUUM_FULL', 'SMART_VACUUM_FULL') THEN v_effective_workers := 1; END IF;
 
@@ -474,3 +482,8 @@ BEGIN
     IF p_verbose THEN RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks; END IF;
 END;
 $$;
+
+
+REVOKE EXECUTE ON PROCEDURE public.sp_orchestrate_vacuum FROM PUBLIC;
+REVOKE EXECUTE ON PROCEDURE public.sp_populate_vacuum_triage FROM PUBLIC;
+
