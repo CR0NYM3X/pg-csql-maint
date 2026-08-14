@@ -25,66 +25,33 @@ La industria suele apoyarse en herramientas externas para combatir la fragmentac
 **La Ventaja (El Valor Real):** No te obligamos a alterar tu modelo de datos agregando Primary Keys a tablas *legacy*, ni corres riesgos compilando código C externo en tus servidores. Además, **no bloqueamos a lo loco**: gracias a nuestro Triage, la herramienta solo ejecuta el bloqueo exclusivo si demuestra matemáticamente que vas a recuperar Gigabytes de espacio. Es la herramienta perfecta para organizaciones que sí cuentan con **ventanas de mantenimiento nocturnas o de fin de semana** y buscan una automatización a prueba de fallos.
 
 ---
+ 
+### 🎯 1. Ámbitos de Cobertura (`p_scope`)
 
-## 🎛️ Ámbitos de Operación (`p_scope`)
+Controla qué tablas del catálogo serán evaluadas para entrar en la cola de trabajo:
 
-El parámetro `p_scope` le dice al orquestador **DÓNDE** debe buscar tablas para trabajar. Define el perímetro de seguridad y los filtros aplicables.
-
-* **`SMART_USER`** *(Recomendado)*
-* **Para qué sirve:** Evalúa tablas del usuario, pero solo procesa las que tengan un nivel de fragmentación/tuplas muertas superior al umbral permitido (`p_threshold_pct`).
-* **Ventaja:** Ahorra CPU. No hace VACUUM a tablas que ya están limpias.
-* **Mini Ejemplo:** `CALL public.sp_orchestrate_vacuum(p_scope => 'SMART_USER');`
-
-
-* **`ALL_USER`**
-* **Para qué sirve:** Fuerza el mantenimiento en absolutamente todas las tablas de usuario de la base de datos, ignorando si están limpias o no.
-* **Ventaja:** Ideal para un "borrón y cuenta nueva" obligatorio anual o antes de una migración.
-
-
-* **`CUSTOM_LIST`**
-* **Para qué sirve:** Modo VIP. Solo evalúa y procesa las tablas que tú configuraste manualmente con `force_maintenance = TRUE` en la tabla de seguridad `maintenance_filters`.
-* **Ventaja:** Permite lanzar un mantenimiento de emergencia al mediodía sobre 3 tablas específicas, sin que el motor se distraiga con el resto del sistema.
-* **Mini Ejemplo:** `CALL public.sp_orchestrate_vacuum(p_scope => 'CUSTOM_LIST', p_profile => 'AGGRESSIVE');`
-
-
-* **`SMART_SYSTEM_USER` / `ALL_SYSTEM_USER` / `ALL_SYSTEM**`
-* **Para qué sirve:** Expande los horizontes para incluir los catálogos internos de PostgreSQL (`pg_catalog`).
-* **Ventaja:** Combate la inflación oculta del diccionario de datos de Postgres, vital en bases de datos con creación y destrucción constante de objetos temporales.
-
-
+| Valor de `p_scope` | Descripción y Alcance |
+| --- | --- |
+| **`'SMART_USER'`** *(Default)* | **Esquemas de Usuario:** Aplica filtros inteligentes de *bloat* (tuplas muertas/porcentaje) ignorando catálogos del sistema (`pg_catalog`, `information_schema`). |
+| **`'ALL_USER'`** | **Esquemas de Usuario (Forzado):** Selecciona todas las tablas de usuario sin importar si cumplen o no los umbrales de tuplas muertas (útil para mantenimientos globales programados). |
+| **`'CUSTOM_LIST'`** | **Lista VIP Exclusiva:** Solo procesa las tablas que tengan el indicador `force_maintenance = TRUE` en la tabla de control `public.maintenance_filters`. |
+| **`'SMART_SYSTEM_USER'`** | **Usuario + Sistema (Inteligente):** Incluye tanto tablas de usuario como catálogos del sistema bajo filtros de umbral de tuplas muertas. |
+| **`'ALL_SYSTEM_USER'`** | **Usuario + Sistema (Todos):** Incluye absolutamente todas las tablas de usuario y del sistema sin filtrar por volumen de basura. |
+| **`'ALL_SYSTEM'`** | **Solo Catálogos del Sistema:** Limita la ejecución exclusivamente a los esquemas de sistema (`pg_catalog` e `information_schema`). |
 
 ---
 
-## ⚙️ Perfiles de Ejecución (`p_profile`)
+### ⚙️ 2. Perfiles de Mantenimiento (`p_profile`)
 
-El parámetro `p_profile` le dice al orquestador **CÓMO** actuar sobre las tablas que encontró. Define el nivel de agresividad y el comando SQL exacto que se inyectará.
+Define el comando SQL exacto que se inyectará asíncronamente a los *workers* y el nivel de concurrencia asignado:
 
-* **`LIGHT`**
-* **Para qué sirve:** Ejecuta un `VACUUM` saltando tablas bloqueadas y omitiendo la limpieza de los índices.
-* **Ventaja:** Ejecución ultrarrápida que no interfiere con transacciones en curso.
-* **Mini Ejemplo:** `CALL public.sp_orchestrate_vacuum(p_profile => 'LIGHT');`
-
-
-* **`BALANCED`** *(Por Defecto)*
-* **Para qué sirve:** Ejecuta un mantenimiento estándar, limpiando índices solo si la heurística interna del motor lo requiere.
-* **Ventaja:** El mejor balance entre recuperación de rendimiento y bajo impacto de I/O.
-
-
-* **`AGGRESSIVE`**
-* **Para qué sirve:** Lanza un mantenimiento pesado usando paralelismo interno nativo de PostgreSQL (4 hilos por tabla) y fuerza una actualización de estadísticas (`ANALYZE`).
-* **Ventaja:** Restaura el rendimiento óptimo de las consultas después de cargas masivas de datos (ETLs).
-
-
-* **`SMART_VACUUM_FULL`** *(La Joya de la Corona)*
-* **Para qué sirve:** Cruza datos con la tabla de telemetría del Triage. Si la tabla demostró tener un hueco físico recuperable enorme, lanza un `VACUUM FULL`. Si no, la ignora.
-* **Ventaja:** Cero "bloqueos en vano". Solo asumes el costo del bloqueo exclusivo si el retorno de inversión (en Megabytes liberados) está matemáticamente asegurado.
-* **Mini Ejemplo:** `CALL public.sp_orchestrate_vacuum(p_profile => 'SMART_VACUUM_FULL', p_threshold_pct => 0.20);`
-
-
-* **`VACUUM_FULL`**
-* **Para qué sirve:** Fuerza la reconstrucción total de la tabla y sus índices, empaquetando los datos a su mínima expresión.
-* **Ventaja:** Elimina el 100% de la fragmentación física. Usar con extrema precaución solo dentro de ventanas de mantenimiento aprobadas.
-
+| Valor de `p_profile` | Sintaxis SQL Generada | Comportamiento y Uso |
+| --- | --- | --- |
+| **`'LIGHT'`** | `VACUUM (SKIP_LOCKED ON, INDEX_CLEANUP OFF) schema.table;` | **No bloqueante:** Salta tablas bloqueadas y omite limpieza de índices. Ideal para horas pico. |
+| **`'BALANCED'`** *(Default)* | `VACUUM (INDEX_CLEANUP AUTO) schema.table;` | **Mantenimiento estándar:** Limpieza equilibrada de tuplas e índices sin saturar I/O. |
+| **`'AGGRESSIVE'`** | `VACUUM (INDEX_CLEANUP AUTO, PARALLEL 4, ANALYZE) schema.table;` | **Mantenimiento profundo:** Usa 4 hilos paralelos por tabla y actualiza estadísticas (`ANALYZE`). |
+| **`'VACUUM_FULL'`** | `VACUUM FULL schema.table;` | **Reestructuración física:** Forzado a `parallel_workers = 1`. Reagrupa espacio en disco reteniendo bloqueo exclusivo (`AccessExclusiveLock`). |
+| **`'SMART_VACUUM_FULL'`** | `VACUUM FULL schema.table;` | **Full Basado en Telemetría:** Solo se ejecuta sobre tablas que en el triage previa (`vacuum_full_triage`) registraron un espacio libre profundo (`deep_free_percent`) mayor o igual al umbral especificado. Forzado a `parallel_workers = 1`. |
 
 
 ---
