@@ -1,0 +1,216 @@
+ 
+###   FASE 1: WAR GAMES (GENERACIÓN MASIVA DE TRÁFICO Y BLOAT REAL)
+
+Ejecuta este bloque para destruir el entorno anterior y crear un volumen de datos que realmente despierte a los algoritmos predictivos del Orquestador.
+
+```sql
+-- ====================================================================================
+-- DBA SQUAD: VANGUARD BLACK-OPS | SIMULADOR DE ESTRÉS TRANSACCIONAL
+-- ====================================================================================
+
+-- 1. Limpieza Total del Entorno
+DROP TABLE IF EXISTS public.demo_extreme_bloat CASCADE;
+DROP TABLE IF EXISTS public.demo_heavy_updates CASCADE;
+DROP TABLE IF EXISTS public.demo_vip_facturas CASCADE;
+DROP TABLE IF EXISTS public.demo_escudo_historial CASCADE;
+TRUNCATE TABLE public.maintenance_filters RESTART IDENTITY CASCADE;
+TRUNCATE TABLE public.vacuum_full_triage RESTART IDENTITY CASCADE;
+TRUNCATE TABLE public.vacuum_tasks RESTART IDENTITY CASCADE;
+TRUNCATE TABLE public.maintenance_jobs RESTART IDENTITY CASCADE;
+
+-- 2. Creación de Topología de Tablas
+CREATE TABLE public.demo_extreme_bloat (id SERIAL, payload TEXT, status VARCHAR(20));
+CREATE TABLE public.demo_heavy_updates (id SERIAL, balance NUMERIC, last_tx TIMESTAMPTZ);
+CREATE TABLE public.demo_vip_facturas (id SERIAL, monto NUMERIC, cliente TEXT);
+CREATE TABLE public.demo_escudo_historial (id SERIAL, log_data TEXT);
+
+-- ====================================================================================
+-- 3. INYECCIÓN MASIVA DE TRÁFICO (SIMULACIÓN DE 6 MESES DE PRODUCCIÓN)
+-- ====================================================================================
+
+-- [CASO A] TABLA EXTREMA: Objetivo -> SMART_VACUUM_FULL
+-- Insertamos 500,000 filas. Borramos el 90%. Ejecutamos VACUUM normal.
+-- Esto genera páginas de disco llenas de "Huecos Físicos" (Free Space) que requieren Vacuum Full.
+INSERT INTO public.demo_extreme_bloat(payload, status) 
+SELECT md5(g::text), 'PROCESADO' FROM generate_series(1, 500000) g;
+
+DELETE FROM public.demo_extreme_bloat WHERE id % 10 != 0; -- Borra 450,000 filas
+VACUUM public.demo_extreme_bloat; -- Convierte las tuplas muertas en Espacio Libre Físico
+ANALYZE public.demo_extreme_bloat;
+
+-- [CASO B] TABLA DE ALTA TRANSACCIONALIDAD: Objetivo -> Mantenimiento AGGRESSIVE
+-- Insertamos 200,000 filas y las actualizamos para generar tuplas muertas masivas.
+INSERT INTO public.demo_heavy_updates(balance, last_tx) 
+SELECT g * 10.5, clock_timestamp() FROM generate_series(1, 200000) g;
+
+UPDATE public.demo_heavy_updates SET balance = balance + 1.0; 
+UPDATE public.demo_heavy_updates SET balance = balance + 2.0; -- Doble update = +400k tuplas muertas
+ANALYZE public.demo_heavy_updates;
+
+-- [CASO C] TABLA VIP (Lista Blanca): Objetivo -> CUSTOM_LIST
+INSERT INTO public.demo_vip_facturas(monto, cliente) 
+SELECT 100.00, 'Cliente VIP' FROM generate_series(1, 50000) g;
+UPDATE public.demo_vip_facturas SET monto = 150.00 WHERE id < 10000;
+ANALYZE public.demo_vip_facturas;
+
+-- [CASO D] TABLA INMUNE (Lista Negra): Objetivo -> ESCUDO DE IGNORADOS
+INSERT INTO public.demo_escudo_historial(log_data) 
+SELECT 'Log de Sistema Crítico' FROM generate_series(1, 100000) g;
+DELETE FROM public.demo_escudo_historial WHERE id < 50000; -- Generamos basura intencional
+ANALYZE public.demo_escudo_historial;
+
+-- ====================================================================================
+-- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
+-- ====================================================================================
+INSERT INTO public.maintenance_filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
+('public', 'demo_escudo_historial', TRUE, FALSE),  -- [ESCUDO ACTIVO]: Intocable.
+('public', 'demo_vip_facturas', FALSE, TRUE);      -- [PASE VIP]: Mantenimiento prioritario.
+
+```
+
+---
+
+### 🔬 FASE 2: LA DEMOSTRACIÓN MAGISTRAL (Paso a Paso)
+
+Aquí empieza tu presentación. Ejecuta cada bloque y léele al cliente la explicación.
+
+#### Escenario 1: El Radar Predictivo (El Triage)
+
+> **Discurso para el cliente:** *"En una base de datos de misión crítica, no lanzamos un `VACUUM FULL` a ciegas porque bloquea la operación. Primero, lanzamos nuestro Escáner Forense Dominical. Este radar lee los mapas de espacio libre del disco duro. Solo si descubre que el espacio hueco justifica el bloqueo, marcará la tabla para cirugía."*
+
+```sql
+CALL public.sp_populate_vacuum_triage(
+    p_scope => 'ALL_USER', 
+    p_free_pct_threshold => 10.00, -- Si tiene >10% de espacio libre, gatilla Fase 2
+    p_dead_pct_threshold => 20.00, 
+    p_min_table_mb => 0.00, 
+    p_verbose => TRUE
+);
+
+-- Demuestra el resultado:
+SELECT table_name, approx_table_len, approx_free_percent, deep_scanned, deep_free_percent 
+FROM public.vacuum_full_triage
+ORDER BY deep_free_percent DESC NULLS LAST;
+
+```
+
+*(Verás que `demo_extreme_bloat` fue escaneada profundamente y registra un brutal ~90% de espacio libre real recuperable).*
+
+---
+
+#### Escenario 2: Mantenimiento Diario Inteligente
+
+> **Discurso para el cliente:** *"Es lunes de madrugada. Lanzamos el mantenimiento general. Observen cómo el orquestador detecta automáticamente la tabla con actualizaciones masivas (`demo_heavy_updates`), procesa sus tuplas muertas en segundo plano, pero respeta estrictamente nuestro escudo de seguridad, ignorando por completo la tabla crítica `demo_escudo_historial` a pesar de estar llena de basura."*
+
+```sql
+CALL public.sp_orchestrate_vacuum(
+    p_scope => 'SMART_USER',
+    p_profile => 'AGGRESSIVE',
+    p_parallel_workers => 4,
+    p_threshold_pct => 0.05,
+    p_verbose => TRUE
+);
+
+-- Demuestra que el escudo funcionó:
+SELECT table_name, status, error_log FROM public.vacuum_tasks WHERE job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs);
+
+```
+
+---
+
+#### Escenario 3: La Cirugía Física (VACUUM FULL Basado en Datos)
+
+> **Discurso para el cliente:** *"Ahora lanzamos el perfil `SMART_VACUUM_FULL`. El orquestador consultará la telemetría del Triage. Observen cómo ignora todas las tablas menores y se va directo como un francotirador a `demo_extreme_bloat`, porque sabe con certeza matemática que recuperará megabytes de espacio en disco."*
+
+```sql
+CALL public.sp_orchestrate_vacuum(
+    p_scope => 'SMART_USER',
+    p_profile => 'SMART_VACUUM_FULL',
+    p_threshold_pct => 0.20, -- Solo tablas con >20% de fragmentación libre
+    p_verbose => TRUE
+);
+
+```
+
+*(Aclaración técnica de Pedro: En este caso, como `VACUUM FULL` desde `pg_background` marca el error "cannot be executed from a function", el orquestador atrapará el error elegantemente. Esto es perfecto para el siguiente paso).*
+
+---
+
+#### Escenario 4: Auditoría Forense y Contención de Desastres
+
+> **Discurso para el cliente:** *"¿Qué pasa si un mantenimiento falla porque la tabla estaba bloqueada por un usuario o el motor rechazó el comando? En herramientas tradicionales, el script muere en silencio. Nuestra herramienta atrapa el error de la memoria compartida de Linux y lo graba en piedra para el DBA."*
+
+```sql
+-- Mostrar la captura forense del error del Vacuum Full anterior
+SELECT 
+    table_name, 
+    status, 
+    error_log 
+FROM public.vacuum_tasks 
+WHERE status = 'FAILED' 
+ORDER BY task_id DESC LIMIT 1;
+
+```
+
+---
+
+#### Escenario 5: El Pase VIP (Ventana Relámpago)
+
+> **Discurso para el cliente:** *"Tenemos 5 minutos antes de un cierre contable y necesitamos limpiar SOLO las tablas de facturación sin que el orquestador escanee el resto del sistema. Usamos nuestro perfil `CUSTOM_LIST`."*
+
+```sql
+CALL public.sp_orchestrate_vacuum(
+    p_scope => 'CUSTOM_LIST',
+    p_profile => 'BALANCED',
+    p_parallel_workers => 2,
+    p_verbose => TRUE
+);
+
+```
+
+---
+
+### 📊 FASE 3: EL TABLERO DE MANDO (DASHBOARD C-LEVEL)
+
+> **Discurso de cierre:** *"Señores, la ingeniería de fondo es compleja, pero la visibilidad directiva debe ser inmediata. Este es el Dashboard que sus gerentes de TI verán cada mañana. Control absoluto, cero cajas negras."*
+
+```sql
+SELECT 
+    j.job_id AS "ID Job",
+    j.job_type AS "Perfil Estratégico",
+    j.status AS "Estado Final",
+    j.parallel_workers AS "Hilos",
+    j.tables_processed AS "Éxitos",
+    COUNT(t.task_id) AS "Total Evaluadas",
+    SUM(CASE WHEN t.status = 'FAILED' THEN 1 ELSE 0 END) AS "Errores",
+    ROUND(EXTRACT(EPOCH FROM (j.ended_at - j.started_at))::numeric, 2) || ' seg' AS "Duración",
+    j.started_at::TIME(0) AS "Hora Inicio"
+FROM public.maintenance_jobs j
+LEFT JOIN public.vacuum_tasks t ON j.job_id = t.job_id
+GROUP BY j.job_id, j.job_type, j.status, j.parallel_workers, j.tables_processed, j.started_at, j.ended_at
+ORDER BY j.job_id DESC;
+
+```
+
+ 
+
+
+###   Querys extras:
+
+```sql
+
+select * FROM public.maintenance_jobs limit 10 ;
+select * FROM public.vacuum_tasks limit 10 ;
+
+
+SELECT 
+    relname AS tabla, 
+    oid, 
+    relfilenode 
+FROM 
+    pg_class 
+WHERE 
+    relname in( 'demo_clientes_bloat','demo_vip_facturas','demo_escudo_historial');
+
+```
+
