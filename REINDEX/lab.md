@@ -197,3 +197,19 @@ ORDER BY j.job_id DESC;
 ```
 
 --- 
+
+
+## Ver si se ha un indice se le ha  realizado reindex  
+```SQL
+SELECT 
+    relname AS nombre_del_indice,
+    oid AS id_logico_original,
+    relfilenode AS archivo_fisico_actual,
+    CASE 
+        WHEN oid = relfilenode THEN 'Nunca reconstruido (Es el archivo original)'
+        ELSE 'Reconstruido (Se le hizo REINDEX)'
+    END AS estado_fisico
+FROM pg_class
+WHERE relkind = 'i' -- Solo buscar índices
+AND relname = 'nombre_de_tu_indice';
+```
