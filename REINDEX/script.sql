@@ -14,15 +14,19 @@ CREATE TABLE IF NOT EXISTS public.index_bloat_triage (
     schema_name VARCHAR(255) NOT NULL,
     table_name VARCHAR(255) NOT NULL,
     index_name VARCHAR(255) NOT NULL,
-    index_size_bytes BIGINT,
-    leaf_fragmentation_pct NUMERIC(5,2),       -- Porcentaje de hojas fragmentadas en el B-Tree
-    empty_pages_pct NUMERIC(5,2),              -- Porcentaje de páginas completamente vacías
+    index_size_bytes BIGINT,                   -- Tamaño total del índice en el disco físico
+    leaf_fragmentation_pct NUMERIC(5,2),       -- Porcentaje de hojas desordenadas (Lentitud de Lectura)
+    avg_leaf_density_pct NUMERIC(5,2),         -- Porcentaje de empaquetado interno (100% = Perfecto, 30% = Mucho Bloat)
+    empty_pages_pct NUMERIC(5,2),              -- Porcentaje de páginas totalmente vacías en el archivo
+    estimated_bloat_bytes BIGINT,              -- [NUEVO] Bytes aproximados desperdiciados en el disco
     evaluated_at TIMESTAMPTZ DEFAULT clock_timestamp(),
     CONSTRAINT uq_triage_week_index UNIQUE (evaluation_week, schema_name, index_name)
 );
 
-COMMENT ON TABLE public.index_bloat_triage IS 'Telemetría semanal de fragmentación de índices B-Tree obtenida vía pgstatindex para justificar reconstrucciones.';
-COMMENT ON COLUMN public.index_bloat_triage.leaf_fragmentation_pct IS 'Porcentaje de fragmentación. Valores > 20-30% suelen indicar necesidad de REINDEX.';
+COMMENT ON TABLE public.index_bloat_triage IS 'Telemetría semanal de fragmentación B-Tree y bloat físico obtenida vía pgstatindex.';
+COMMENT ON COLUMN public.index_bloat_triage.leaf_fragmentation_pct IS 'Desorden lógico B-Tree (impacta CPU e I/O de lectura).';
+COMMENT ON COLUMN public.index_bloat_triage.avg_leaf_density_pct IS 'Densidad de empaquetado (Valores bajos indican mucho espacio desperdiciado dentro de las páginas).';
+COMMENT ON COLUMN public.index_bloat_triage.estimated_bloat_bytes IS 'Espacio en bytes desperdiciado en disco que se recuperará al ejecutar REINDEX.';
 
 
 -- =========================================================================================
@@ -60,6 +64,7 @@ COMMENT ON INDEX public.idx_reindex_tasks_job_status_id IS 'Índice de despacho:
    PROCEDIMIENTO: public.sp_populate_index_triage
    FUNCIÓN: Escáner físico de fragmentación B-Tree. Llena la telemetría predictiva.
    USO RECOMENDADO: Semanal (Ej. Sábados 01:00 AM) antes de la ventana de REINDEX.
+ 
 ========================================================================================= */
 CREATE OR REPLACE PROCEDURE public.sp_populate_index_triage(
     p_scope VARCHAR DEFAULT 'ALL_USER',
@@ -72,6 +77,12 @@ DECLARE
     r_idx RECORD; r_stat RECORD;
     v_week DATE := date_trunc('week', current_date)::DATE;
     v_processed INT := 0; v_sniped INT := 0;
+    
+    -- Variables sanitizadas (Anti-NaN)
+    v_leaf_frag NUMERIC(5,2);
+    v_avg_density NUMERIC(5,2);
+    v_empty_pages NUMERIC(5,2);
+    v_est_bloat BIGINT;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple') THEN
         RAISE EXCEPTION 'CRÍTICO: La extensión "pgstattuple" no está instalada.';
@@ -108,28 +119,50 @@ BEGIN
           )
     ) LOOP
         BEGIN
-            -- Si el índice es inválido (zombi), lo registramos con 100% de fragmentación para forzar su reconstrucción
+            -- CASO 1: Si el índice es inválido (zombi), lo registramos con 100% de fragmentación y 100% de bloat
             IF NOT r_idx.indisvalid THEN
                 INSERT INTO public.index_bloat_triage (
-                    evaluation_week, schema_name, table_name, index_name, index_size_bytes, leaf_fragmentation_pct, empty_pages_pct
+                    evaluation_week, schema_name, table_name, index_name, index_size_bytes, 
+                    leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, estimated_bloat_bytes
                 ) VALUES (
-                    v_week, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.size_bytes, 100.00, 100.00
+                    v_week, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.size_bytes, 
+                    100.00, 0.00, 100.00, r_idx.size_bytes
                 ) ON CONFLICT (evaluation_week, schema_name, index_name) DO UPDATE SET
-                    index_size_bytes = EXCLUDED.index_size_bytes, leaf_fragmentation_pct = 100.00, evaluated_at = clock_timestamp();
+                    index_size_bytes = EXCLUDED.index_size_bytes, 
+                    leaf_fragmentation_pct = 100.00, 
+                    avg_leaf_density_pct = 0.00,
+                    empty_pages_pct = 100.00, 
+                    estimated_bloat_bytes = EXCLUDED.index_size_bytes,
+                    evaluated_at = clock_timestamp();
                 
                 v_sniped := v_sniped + 1;
             ELSE
-                -- Escaneo físico del B-Tree (Alto I/O)
+                -- CASO 2: Escaneo físico del B-Tree (Alto I/O)
                 SELECT * INTO r_stat FROM pgstatindex(r_idx.index_oid);
 
-                IF r_stat.leaf_fragmentation >= p_frag_pct_threshold THEN
+                -- Protección Anti-NaN: Si el índice está vacío, pgstatindex devuelve NaN. Convertimos a 0.00
+                v_leaf_frag   := CASE WHEN r_stat.leaf_fragmentation = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.leaf_fragmentation, 0.00) END;
+                v_avg_density := CASE WHEN r_stat.avg_leaf_density = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.avg_leaf_density, 0.00) END;
+                v_empty_pages := CASE WHEN r_stat.empty_pages = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.empty_pages, 0.00) END;
+
+                -- Cálculo de Bloat Físico Estimado en Bytes: Tamaño * (1 - (Densidad / 100))
+                v_est_bloat := ROUND(r_idx.size_bytes * (1.0 - (v_avg_density / 100.0)))::BIGINT;
+
+                -- Evaluación de Umbral para Registro
+                IF v_leaf_frag >= p_frag_pct_threshold THEN
                     INSERT INTO public.index_bloat_triage (
-                        evaluation_week, schema_name, table_name, index_name, index_size_bytes, leaf_fragmentation_pct, empty_pages_pct
+                        evaluation_week, schema_name, table_name, index_name, index_size_bytes, 
+                        leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, estimated_bloat_bytes
                     ) VALUES (
-                        v_week, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.size_bytes, r_stat.leaf_fragmentation, r_stat.empty_pages
+                        v_week, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.size_bytes, 
+                        v_leaf_frag, v_avg_density, v_empty_pages, v_est_bloat
                     ) ON CONFLICT (evaluation_week, schema_name, index_name) DO UPDATE SET
-                        index_size_bytes = EXCLUDED.index_size_bytes, leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, 
-                        empty_pages_pct = EXCLUDED.empty_pages_pct, evaluated_at = clock_timestamp();
+                        index_size_bytes = EXCLUDED.index_size_bytes, 
+                        leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, 
+                        avg_leaf_density_pct = EXCLUDED.avg_leaf_density_pct,
+                        empty_pages_pct = EXCLUDED.empty_pages_pct, 
+                        estimated_bloat_bytes = EXCLUDED.estimated_bloat_bytes,
+                        evaluated_at = clock_timestamp();
                     
                     v_sniped := v_sniped + 1;
                 END IF;
