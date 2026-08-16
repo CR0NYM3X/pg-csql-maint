@@ -2,7 +2,7 @@ BEGIN;
 
 -- 1. TABLA PADRE: Orquestación Global
 -- DROP TABLE IF EXISTS public.maintenance_jobs CASCADE;
--- TRUNCATE TABLE public.maintenance_jobs RESTART IDENTITY ;
+-- TRUNCATE TABLE public.maintenance_jobs RESTART IDENTITY CASCADE ;
 CREATE TABLE IF NOT EXISTS public.maintenance_jobs (
     job_id SERIAL PRIMARY KEY,                                 -- Identificador único secuencial del trabajo maestro de mantenimiento.
     job_type VARCHAR(50) NOT NULL,                             -- Tipo de trabajo y modo (ej. 'SMART', 'ALL', 'PRELOAD', 'SMART_USER_BALANCED').
@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS public.mant_analyze_task (
     ended_at TIMESTAMPTZ,
     error_log TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_analyze_task_active_queue 
+ON public.mant_analyze_task (job_id, stage_number, task_id ASC)
+WHERE status IN ('PENDING', 'RUNNING');
+
+COMMENT ON INDEX public.idx_analyze_task_active_queue IS 'Índice Parcial de Despacho. Mantiene un B-Tree ultraligero exclusivo para tareas vivas, ignorando el historial muerto para un polling de latencia cero.';
+
+CREATE INDEX IF NOT EXISTS idx_analyze_task_active_queue 
+ON public.mant_analyze_task (job_id, stage_number, task_id ASC)
+WHERE status IN ('PENDING', 'RUNNING');
+
+COMMENT ON INDEX public.idx_analyze_task_active_queue IS 'Índice Parcial de Despacho. Mantiene un B-Tree ultraligero exclusivo para tareas vivas, ignorando el historial muerto para un polling de latencia cero.';
 
 
 -- 2. DICCIONARIO DE DATOS NATIVO (DOCUMENTACIÓN CORPORATIVA)
