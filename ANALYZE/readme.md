@@ -48,13 +48,13 @@ Es un **motor de mantenimiento asíncrono y paralelo para PostgreSQL** diseñado
 
 ```sql
 -- 1. Mantenimiento Diario Autónomo (Recomendado)
-CALL mantos.sp_orchestrate_maintenance(p_job_type => 'SMART', p_parallel_workers => 4, p_verbose => TRUE);
+CALL maint.sp_orchestrate_analyze(p_job_type => 'SMART', p_parallel_workers => 4, p_verbose => TRUE);
 
 -- 2. Mantenimiento Masivo de Fin de Semana
-CALL mantos.sp_orchestrate_maintenance(p_job_type => 'ALL', p_parallel_workers => 8, p_verbose => FALSE);
+CALL maint.sp_orchestrate_analyze(p_job_type => 'ALL', p_parallel_workers => 8, p_verbose => FALSE);
 
 -- 3. Mantenimiento de Emergencia Post-Restauración
-CALL mantos.sp_orchestrate_maintenance(p_job_type => 'PRELOAD', p_parallel_workers => 8, p_verbose => TRUE);
+CALL maint.sp_orchestrate_analyze(p_job_type => 'PRELOAD', p_parallel_workers => 8, p_verbose => TRUE);
 
 ```
 
@@ -70,7 +70,7 @@ Lo lanzas con `TRUE` en tu DBeaver, se queda "trabado", pero te va imprimiendo u
 ```sql
 --- TU CONSOLA SE BLOQUEADA  hasta que termine de procesar todas las tablas.
 
-CALL mantos.sp_orchestrate_maintenance(
+CALL maint.sp_orchestrate_analyze(
     p_job_type         => 'SMART', 
     p_parallel_workers => 4, 
     p_verbose          => TRUE,
@@ -90,16 +90,16 @@ INFO:  =========================================================
 INFO:  [+] JOB ID Asignado: 2
 INFO:  [+] Total de tablas que requieren intervención: 5
 INFO:  ---------------------------------------------------------
-INFO:     [>] LANZANDO -> Hilo 56479 asignado a Tabla: mantos.lab_sesiones (Task ID: 6)
-INFO:     [>] LANZANDO -> Hilo 56480 asignado a Tabla: mantos.lab_carritos (Task ID: 7)
-INFO:     [>] LANZANDO -> Hilo 56481 asignado a Tabla: mantos.lab_pedidos (Task ID: 8)
-INFO:     [>] LANZANDO -> Hilo 56482 asignado a Tabla: mantos.lab_logs_auditoria (Task ID: 9)
-INFO:     [✓] ÉXITO -> Tabla: mantos.lab_carritos (Task ID: 7)
-INFO:     [✓] ÉXITO -> Tabla: mantos.lab_logs_auditoria (Task ID: 9)
-INFO:     [✓] ÉXITO -> Tabla: mantos.lab_pedidos (Task ID: 8)
-INFO:     [✓] ÉXITO -> Tabla: mantos.lab_sesiones (Task ID: 6)
-INFO:     [>] LANZANDO -> Hilo 56483 asignado a Tabla: mantos.lab_inventario (Task ID: 10)
-INFO:     [✓] ÉXITO -> Tabla: mantos.lab_inventario (Task ID: 10)
+INFO:     [>] LANZANDO -> Hilo 56479 asignado a Tabla: maint.lab_sesiones (Task ID: 6)
+INFO:     [>] LANZANDO -> Hilo 56480 asignado a Tabla: maint.lab_carritos (Task ID: 7)
+INFO:     [>] LANZANDO -> Hilo 56481 asignado a Tabla: maint.lab_pedidos (Task ID: 8)
+INFO:     [>] LANZANDO -> Hilo 56482 asignado a Tabla: maint.lab_logs_auditoria (Task ID: 9)
+INFO:     [✓] ÉXITO -> Tabla: maint.lab_carritos (Task ID: 7)
+INFO:     [✓] ÉXITO -> Tabla: maint.lab_logs_auditoria (Task ID: 9)
+INFO:     [✓] ÉXITO -> Tabla: maint.lab_pedidos (Task ID: 8)
+INFO:     [✓] ÉXITO -> Tabla: maint.lab_sesiones (Task ID: 6)
+INFO:     [>] LANZANDO -> Hilo 56483 asignado a Tabla: maint.lab_inventario (Task ID: 10)
+INFO:     [✓] ÉXITO -> Tabla: maint.lab_inventario (Task ID: 10)
 INFO:  ---------------------------------------------------------
 INFO:  [DBA SQUAD] ORQUESTACIÓN FINALIZADA CON ÉXITO.
 INFO:  Tiempo Total: 00:00:02.036088
@@ -112,9 +112,9 @@ INFO:  =========================================================
 **MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
 ```sql
 SELECT pid 
-FROM mantos.pg_background_launch(
+FROM maint.pg_background_launch(
     $$
-      CALL mantos.sp_orchestrate_maintenance(
+      CALL maint.sp_orchestrate_analyze(
           p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
           p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
           p_verbose          => FALSE,          -- Silencioso: Como se ejecuta en automático, no saturamos el log
@@ -136,7 +136,7 @@ SELECT cron.schedule_in_database(
     'vanguard_smart_analyze_daily', 
     '0 2 * * *', 
     $$ 
-    CALL mantos.sp_orchestrate_maintenance(
+    CALL maint.sp_orchestrate_analyze(
         p_job_type         => 'SMART', 
         p_parallel_workers => 4, 
         p_verbose          => FALSE, 
