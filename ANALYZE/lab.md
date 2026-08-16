@@ -149,7 +149,7 @@ ORDER BY change_pct DESC NULLS LAST;
 Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enciende el modo visual (`TRUE`):
 
 ```sql
-CALL mantos.sp_orchestrate_maintenance(
+CALL maint.sp_orchestrate_analyze(
     p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
     p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
     p_verbose          => TRUE ,          -- Silencioso: Como se ejecuta en automático, para pg_cron usa false
@@ -208,7 +208,7 @@ SELECT
     clock_timestamp() - query_start AS duracion_actual,
     query
 FROM pg_catalog.pg_stat_activity
-WHERE (backend_type = 'pg_background' OR query ILIKE '%sp_orchestrate_maintenance%')
+WHERE (backend_type = 'pg_background' OR query ILIKE '%sp_orchestrate_analyze%')
   AND pid <> pg_backend_pid()
 ORDER BY query_start ASC;
 
@@ -216,7 +216,7 @@ ORDER BY query_start ASC;
 
 ---
 
-### 2. MONITOREO FORENSE DESDE `public.mant_analyze_task`
+### 2. MONITOREO FORENSE DESDE `public.analyze_tasks`
 
 *(Monitorea el progreso de la cola, qué tabla está corriendo, cuál terminó, cuál falló y el porcentaje de cambio/desfase)*
 
@@ -233,9 +233,9 @@ SELECT
     t.child_pid,
     COALESCE(t.ended_at, clock_timestamp()) - t.started_at AS duracion,
     COALESCE(t.error_log, 'Ninguno') AS detalle_error
-FROM mantos.mant_analyze_task t
-JOIN mantos.maintenance_jobs j ON t.job_id = j.job_id
-WHERE t.job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs)
+FROM maint.analyze_tasks t
+JOIN maint.jobs j ON t.job_id = j.job_id
+WHERE t.job_id = (SELECT MAX(job_id) FROM public.jobs)
 ORDER BY t.task_id ASC;
 
 
@@ -244,12 +244,12 @@ SELECT
     schema_name || '.' || table_name AS tabla,
     status AS estatus,
     ROUND(EXTRACT(EPOCH FROM (ended_at - started_at))::numeric, 3) AS duracion_segundos
-FROM mantos.mant_analyze_task
-WHERE job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs)
+FROM maint.analyze_tasks
+WHERE job_id = (SELECT MAX(job_id) FROM public.jobs)
 ORDER BY schema_name, table_name, stage_number;
 
-select * from mantos.maintenance_jobs;
+select * from maint.jobs;
 
-select * from mantos.mant_analyze_task;
+select * from maint.analyze_tasks;
 
 ```
