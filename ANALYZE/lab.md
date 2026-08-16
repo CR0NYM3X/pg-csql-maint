@@ -149,13 +149,13 @@ ORDER BY change_pct DESC NULLS LAST;
 Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enciende el modo visual (`TRUE`):
 
 ```sql
-CALL public.sp_orchestrate_maintenance(
+CALL mantos.sp_orchestrate_maintenance(
     p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
     p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
-    p_verbose          => FALSE,          -- Silencioso: Como se ejecuta en automático, no saturamos el log
+    p_verbose          => TRUE ,          -- Silencioso: Como se ejecuta en automático, para pg_cron usa false
     p_threshold_pct    => 0.05,           -- Umbral del 5%: Solo toca la tabla si el 5% de sus datos cambiaron
     p_min_rows         => 1000,           -- Filtro anti-morralla: Ignora tablas con menos de 1,000 cambios
-    p_cutoff_time      => '06:00:00'::TIME -- [KILL SWITCH]: Aborto automático a las 6:00 AM exactas
+    p_cutoff_time      => '06:00:00'::TIME -- [KILL SWITCH]: Aborto automático a las 6:00 AM exactas o usa NULL para deshabilitarlo
 );
 ```
 
@@ -233,8 +233,8 @@ SELECT
     t.child_pid,
     COALESCE(t.ended_at, clock_timestamp()) - t.started_at AS duracion,
     COALESCE(t.error_log, 'Ninguno') AS detalle_error
-FROM public.mant_analyze_task t
-JOIN public.maintenance_jobs j ON t.job_id = j.job_id
+FROM mantos.mant_analyze_task t
+JOIN mantos.maintenance_jobs j ON t.job_id = j.job_id
 WHERE t.job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs)
 ORDER BY t.task_id ASC;
 
@@ -244,12 +244,12 @@ SELECT
     schema_name || '.' || table_name AS tabla,
     status AS estatus,
     ROUND(EXTRACT(EPOCH FROM (ended_at - started_at))::numeric, 3) AS duracion_segundos
-FROM public.mant_analyze_task
+FROM mantos.mant_analyze_task
 WHERE job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs)
 ORDER BY schema_name, table_name, stage_number;
 
-select * from public.maintenance_jobs;
+select * from mantos.maintenance_jobs;
 
-select * from public.mant_analyze_task;
+select * from mantos.mant_analyze_task;
 
 ```
