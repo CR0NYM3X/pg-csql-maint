@@ -1,9 +1,11 @@
 BEGIN;
 
+CREATE SCHEMA IF NOT EXISTS mantos;
+
 -- 1. TABLA PADRE: Orquestación Global
 -- DROP TABLE IF EXISTS public.maintenance_jobs CASCADE;
 -- TRUNCATE TABLE public.maintenance_jobs RESTART IDENTITY CASCADE ;
-CREATE TABLE IF NOT EXISTS public.maintenance_jobs (
+CREATE TABLE IF NOT EXISTS mantos.maintenance_jobs (
     job_id SERIAL PRIMARY KEY,                                 -- Identificador único secuencial del trabajo maestro de mantenimiento.
     job_type VARCHAR(50) NOT NULL,                             -- Tipo de trabajo y modo (ej. 'SMART', 'ALL', 'PRELOAD', 'SMART_USER_BALANCED').
     maintenance_action VARCHAR(20) NOT NULL DEFAULT 'ANALYZE', -- Acción core ejecutada ('ANALYZE' o 'VACUUM').
@@ -15,32 +17,31 @@ CREATE TABLE IF NOT EXISTS public.maintenance_jobs (
     ended_at TIMESTAMPTZ                                       -- Marca de tiempo de finalización global del orquestador.
 );
 
-
--- 2. DICCIONARIO DE DATOS NATIVO (pg_description)
-COMMENT ON TABLE public.maintenance_jobs IS 'Cabecera maestra unificada que registra la ejecución global, estado, tipo de acción (ANALYZE/VACUUM) y métricas de cada ciclo de orquestación.';
-COMMENT ON COLUMN public.maintenance_jobs.job_id IS 'Identificador único secuencial del trabajo maestro de mantenimiento.';
-COMMENT ON COLUMN public.maintenance_jobs.job_type IS 'Modo o perfil de ejecución asignado al trabajo (ej. SMART, ALL, PRELOAD, SMART_USER_BALANCED).';
-COMMENT ON COLUMN public.maintenance_jobs.maintenance_action IS 'Acción principal del motor de base de datos ejecutada (ej. ANALYZE, VACUUM).';
-COMMENT ON COLUMN public.maintenance_jobs.threshold_pct IS 'Umbral porcentual de modificación (drift_pct) o tuplas muertas configurado para el disparo.';
-COMMENT ON COLUMN public.maintenance_jobs.parallel_workers IS 'Límite de concurrencia de hilos/workers paralelos asignados al trabajo.';
-COMMENT ON COLUMN public.maintenance_jobs.tables_processed IS 'Métrica de contador en memoria RAM del total de tablas analizadas o limpiadas con éxito.';
-COMMENT ON COLUMN public.maintenance_jobs.status IS 'Estado global del trabajo (INITIALIZING, RUNNING, COMPLETED, COMPLETED_WITH_CUTOFF).';
-COMMENT ON COLUMN public.maintenance_jobs.started_at IS 'Marca de tiempo (Timestamptz) de cuando inició el orquestador maestro.';
-COMMENT ON COLUMN public.maintenance_jobs.ended_at IS 'Marca de tiempo (Timestamptz) de cuando concluyó la orquestación global.';
-
 -- 3. ÍNDICE DE HERENCIA Y RENDIMIENTO
 CREATE INDEX IF NOT EXISTS idx_maint_jobs_type_action_id 
-ON public.maintenance_jobs (job_type, maintenance_action, job_id DESC);
+ON mantos.maintenance_jobs (job_type, maintenance_action, job_id DESC);
 
-COMMENT ON INDEX public.idx_maint_jobs_type_action_id IS 'Acelera la búsqueda del último trabajo ejecutado (MAX job_id) para herencias de estado en milisegundos.';
+-- 2. DICCIONARIO DE DATOS NATIVO (pg_description)
+COMMENT ON TABLE  mantos.maintenance_jobs IS 'Cabecera maestra unificada que registra la ejecución global, estado, tipo de acción (ANALYZE/VACUUM) y métricas de cada ciclo de orquestación.';
+COMMENT ON COLUMN mantos.maintenance_jobs.job_id IS 'Identificador único secuencial del trabajo maestro de mantenimiento.';
+COMMENT ON COLUMN mantos.maintenance_jobs.job_type IS 'Modo o perfil de ejecución asignado al trabajo (ej. SMART, ALL, PRELOAD, SMART_USER_BALANCED).';
+COMMENT ON COLUMN mantos.maintenance_jobs.maintenance_action IS 'Acción principal del motor de base de datos ejecutada (ej. ANALYZE, VACUUM).';
+COMMENT ON COLUMN mantos.maintenance_jobs.threshold_pct IS 'Umbral porcentual de modificación (drift_pct) o tuplas muertas configurado para el disparo.';
+COMMENT ON COLUMN mantos.maintenance_jobs.parallel_workers IS 'Límite de concurrencia de hilos/workers paralelos asignados al trabajo.';
+COMMENT ON COLUMN mantos.maintenance_jobs.tables_processed IS 'Métrica de contador en memoria RAM del total de tablas analizadas o limpiadas con éxito.';
+COMMENT ON COLUMN mantos.maintenance_jobs.status IS 'Estado global del trabajo (INITIALIZING, RUNNING, COMPLETED, COMPLETED_WITH_CUTOFF).';
+COMMENT ON COLUMN mantos.maintenance_jobs.started_at IS 'Marca de tiempo (Timestamptz) de cuando inició el orquestador maestro.';
+COMMENT ON COLUMN mantos.maintenance_jobs.ended_at IS 'Marca de tiempo (Timestamptz) de cuando concluyó la orquestación global.';
+
+
 
  
 -- 2. TABLA HIJA: Trazabilidad Forense por Tabla (CON TELEMETRÍA Y SLOTS)
 -- DROP TABLE IF EXISTS public.mant_analyze_task CASCADE;
 -- TRUNCATE TABLE public.mant_analyze_task RESTART IDENTITY ;
-CREATE TABLE IF NOT EXISTS public.mant_analyze_task (
+CREATE TABLE IF NOT EXISTS mantos.mant_analyze_task (
     task_id SERIAL PRIMARY KEY,
-    job_id INT NOT NULL REFERENCES public.maintenance_jobs(job_id) ON DELETE CASCADE,
+    job_id INT NOT NULL REFERENCES mantos.maintenance_jobs(job_id) ON DELETE CASCADE,
     schema_name TEXT NOT NULL,
     table_name TEXT NOT NULL,
     total_filas BIGINT,                  
@@ -56,48 +57,40 @@ CREATE TABLE IF NOT EXISTS public.mant_analyze_task (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analyze_task_active_queue 
-ON public.mant_analyze_task (job_id, stage_number, task_id ASC)
+ON mantos.mant_analyze_task (job_id, stage_number, task_id ASC)
 WHERE status IN ('PENDING', 'RUNNING');
 
-COMMENT ON INDEX public.idx_analyze_task_active_queue IS 'Índice Parcial de Despacho. Mantiene un B-Tree ultraligero exclusivo para tareas vivas, ignorando el historial muerto para un polling de latencia cero.';
-
-CREATE INDEX IF NOT EXISTS idx_analyze_task_active_queue 
-ON public.mant_analyze_task (job_id, stage_number, task_id ASC)
-WHERE status IN ('PENDING', 'RUNNING');
-
-COMMENT ON INDEX public.idx_analyze_task_active_queue IS 'Índice Parcial de Despacho. Mantiene un B-Tree ultraligero exclusivo para tareas vivas, ignorando el historial muerto para un polling de latencia cero.';
-
-
--- 2. DICCIONARIO DE DATOS NATIVO (DOCUMENTACIÓN CORPORATIVA)
-COMMENT ON TABLE public.mant_analyze_task IS 'Cola transaccional y bitácora forense para la orquestación asíncrona de estadísticas (ANALYZE).';
-COMMENT ON COLUMN public.mant_analyze_task.task_id IS 'Identificador único secuencial de la tarea individual por tabla.';
-COMMENT ON COLUMN public.mant_analyze_task.job_id IS 'Llave foránea enlazada al registro maestro en maintenance_jobs (ON DELETE CASCADE).';
-COMMENT ON COLUMN public.mant_analyze_task.schema_name IS 'Nombre del esquema de base de datos donde reside la tabla objetivo.';
-COMMENT ON COLUMN public.mant_analyze_task.table_name IS 'Nombre de la tabla física objetivo de la actualización de estadísticas.';
-COMMENT ON COLUMN public.mant_analyze_task.total_filas IS 'Tuplas vivas (n_live_tup) estimadas al momento de encolar la tarea.';
-COMMENT ON COLUMN public.mant_analyze_task.filas_afectadas IS 'Tuplas modificadas (n_mod_since_analyze) detectadas al momento de encolar.';
-COMMENT ON COLUMN public.mant_analyze_task.drift_pct IS 'Porcentaje de desfase estadístico calculado (filas_afectadas / total_filas).';
-COMMENT ON COLUMN public.mant_analyze_task.status IS 'Estado de la tarea (PENDING, RUNNING, SUCCESS, FAILED, SKIPPED_TIME_LIMIT).';
-COMMENT ON COLUMN public.mant_analyze_task.slot_id IS 'Identificador de la ranura de concurrencia asignada para la gestión estricta de hilos.';
-COMMENT ON COLUMN public.mant_analyze_task.child_pid IS 'Identificador del proceso (PID) del worker de fondo lanzado en Linux.';
-COMMENT ON COLUMN public.mant_analyze_task.stage_number IS 'Fase de ejecución actual (Vital para la orquestación escalonada del modo PRELOAD).';
-COMMENT ON COLUMN public.mant_analyze_task.started_at IS 'Marca de tiempo del inicio de la ejecución individual de la tabla.';
-COMMENT ON COLUMN public.mant_analyze_task.ended_at IS 'Marca de tiempo de finalización del análisis (éxito o fallo).';
-COMMENT ON COLUMN public.mant_analyze_task.error_log IS 'Captura forense del mensaje nativo de error (SQLERRM) extraído de la memoria dinámica.';
-
-
--- 3. ÍNDICES DE ALTO RENDIMIENTO (LA ARMADURA DEL MOTOR)
+CREATE INDEX IF NOT EXISTS idx_analyze_task_forensic_trace 
+ON mantos.mant_analyze_task (schema_name, table_name, ended_at DESC);
 
 -- Índice Operativo Principal: Cubre Integridad Referencial (CASCADE), Filtros de Fase, Estados y Ordenamiento del Despachador.
 CREATE INDEX IF NOT EXISTS idx_analyze_tasks_job_stage_status_id 
-ON public.mant_analyze_task (job_id, stage_number, status, task_id);
+ON mantos.mant_analyze_task (job_id, stage_number, status, task_id);
 
-COMMENT ON INDEX public.idx_analyze_tasks_job_stage_status_id IS 'Índice central de despacho: Evita Seq Scans en DELETE CASCADE y optimiza radicalmente los bloqueos WHERE job_id = X AND stage_number = Y AND status = Z ORDER BY task_id LIMIT 1.';
+-- 2. DICCIONARIO DE DATOS NATIVO (DOCUMENTACIÓN CORPORATIVA)
+COMMENT ON TABLE  mantos.mant_analyze_task IS 'Cola transaccional y bitácora forense para la orquestación asíncrona de estadísticas (ANALYZE).';
+COMMENT ON INDEX  mantos.idx_analyze_task_active_queue IS 'Índice Parcial de Despacho. Mantiene un B-Tree ultraligero exclusivo para tareas vivas, ignorando el historial muerto para un polling de latencia cero.';
+COMMENT ON INDEX  mantos.idx_maint_jobs_type_action_id IS 'Acelera la búsqueda del último trabajo ejecutado (MAX job_id) para herencias de estado en milisegundos.';
+COMMENT ON INDEX  mantos.idx_analyze_task_forensic_trace IS 'Índice Forense. Permite a los DBAs auditar el historial de mantenimiento de una tabla específica en milisegundos, ordenado desde el más reciente.';
+COMMENT ON INDEX  mantos.idx_analyze_tasks_job_stage_status_id IS 'Índice central de despacho: Evita Seq Scans en DELETE CASCADE y optimiza radicalmente los bloqueos WHERE job_id = X AND stage_number = Y AND status = Z ORDER BY task_id LIMIT 1.';
+COMMENT ON COLUMN mantos.mant_analyze_task.task_id IS 'Identificador único secuencial de la tarea individual por tabla.';
+COMMENT ON COLUMN mantos.mant_analyze_task.job_id IS 'Llave foránea enlazada al registro maestro en maintenance_jobs (ON DELETE CASCADE).';
+COMMENT ON COLUMN mantos.mant_analyze_task.schema_name IS 'Nombre del esquema de base de datos donde reside la tabla objetivo.';
+COMMENT ON COLUMN mantos.mant_analyze_task.table_name IS 'Nombre de la tabla física objetivo de la actualización de estadísticas.';
+COMMENT ON COLUMN mantos.mant_analyze_task.total_filas IS 'Tuplas vivas (n_live_tup) estimadas al momento de encolar la tarea.';
+COMMENT ON COLUMN mantos.mant_analyze_task.filas_afectadas IS 'Tuplas modificadas (n_mod_since_analyze) detectadas al momento de encolar.';
+COMMENT ON COLUMN mantos.mant_analyze_task.drift_pct IS 'Porcentaje de desfase estadístico calculado (filas_afectadas / total_filas).';
+COMMENT ON COLUMN mantos.mant_analyze_task.status IS 'Estado de la tarea (PENDING, RUNNING, SUCCESS, FAILED, SKIPPED_TIME_LIMIT).';
+COMMENT ON COLUMN mantos.mant_analyze_task.slot_id IS 'Identificador de la ranura de concurrencia asignada para la gestión estricta de hilos.';
+COMMENT ON COLUMN mantos.mant_analyze_task.child_pid IS 'Identificador del proceso (PID) del worker de fondo lanzado en Linux.';
+COMMENT ON COLUMN mantos.mant_analyze_task.stage_number IS 'Fase de ejecución actual (Vital para la orquestación escalonada del modo PRELOAD).';
+COMMENT ON COLUMN mantos.mant_analyze_task.started_at IS 'Marca de tiempo del inicio de la ejecución individual de la tabla.';
+COMMENT ON COLUMN mantos.mant_analyze_task.ended_at IS 'Marca de tiempo de finalización del análisis (éxito o fallo).';
+COMMENT ON COLUMN mantos.mant_analyze_task.error_log IS 'Captura forense del mensaje nativo de error (SQLERRM) extraído de la memoria dinámica.';
 
+ 
 
-
-
-CREATE OR REPLACE PROCEDURE public.sp_orchestrate_maintenance(
+CREATE OR REPLACE PROCEDURE mantos.sp_orchestrate_maintenance(
     p_job_type VARCHAR,                  -- 'SMART', 'ALL', 'PRELOAD'
     p_parallel_workers INT,              -- Cantidad de hilos paralelos
     p_verbose BOOLEAN DEFAULT FALSE,     -- Diagnóstico visual en tiempo real
@@ -115,7 +108,7 @@ DECLARE
 BEGIN
    PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
    -- configuracion de seguridad
-   PERFORM pg_catalog.set_config('search_path', 'public, pg_temp', true);
+   PERFORM pg_catalog.set_config('search_path', 'mantos, public, pg_temp', true);
     IF p_job_type = 'PRELOAD' THEN v_max_stages := 3; END IF;
 
     IF p_verbose THEN
@@ -268,6 +261,6 @@ $$;
 
 
 
-REVOKE EXECUTE ON PROCEDURE public.sp_orchestrate_maintenance FROM PUBLIC;
+REVOKE EXECUTE ON PROCEDURE mantos.sp_orchestrate_maintenance FROM PUBLIC;
 
 COMMIT;
