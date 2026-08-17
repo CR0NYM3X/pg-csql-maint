@@ -14,9 +14,9 @@ DROP TABLE IF EXISTS public.demo_heavy_updates CASCADE;
 DROP TABLE IF EXISTS public.demo_vip_facturas CASCADE;
 DROP TABLE IF EXISTS public.demo_escudo_historial CASCADE;
 TRUNCATE TABLE public.maintenance_filters RESTART IDENTITY CASCADE;
-TRUNCATE TABLE public.vacuum_full_triage RESTART IDENTITY CASCADE;
-TRUNCATE TABLE public.vacuum_tasks RESTART IDENTITY CASCADE;
-TRUNCATE TABLE public.maintenance_jobs RESTART IDENTITY CASCADE;
+TRUNCATE TABLE maint.vacuum_full_triage RESTART IDENTITY CASCADE;
+TRUNCATE TABLE maint.vacuum_tasks RESTART IDENTITY CASCADE;
+TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE;
 
 -- 2. Creación de Topología de Tablas
 CREATE TABLE public.demo_extreme_bloat (id SERIAL, payload TEXT, status VARCHAR(20));
@@ -79,7 +79,7 @@ Aquí empieza tu presentación. Ejecuta cada bloque y léele al cliente la expli
 > **Discurso para el cliente:** *"En una base de datos de misión crítica, no lanzamos un `VACUUM FULL` a ciegas porque bloquea la operación. Primero, lanzamos nuestro Escáner Forense Dominical. Este radar lee los mapas de espacio libre del disco duro. Solo si descubre que el espacio hueco justifica el bloqueo, marcará la tabla para cirugía."*
 
 ```sql
-CALL public.sp_populate_vacuum_triage(
+CALL maint.sp_populate_vacuum_triage(
     p_scope => 'ALL_USER', 
     p_free_pct_threshold => 10.00, -- Si tiene >10% de espacio libre, gatilla Fase 2
     p_dead_pct_threshold => 20.00, 
@@ -89,7 +89,7 @@ CALL public.sp_populate_vacuum_triage(
 
 -- Demuestra el resultado:
 SELECT table_name, approx_table_len, approx_free_percent, deep_scanned, deep_free_percent 
-FROM public.vacuum_full_triage
+FROM maint.vacuum_full_triage
 ORDER BY deep_free_percent DESC NULLS LAST;
 
 ```
@@ -103,7 +103,7 @@ ORDER BY deep_free_percent DESC NULLS LAST;
 > **Discurso para el cliente:** *"Es lunes de madrugada. Lanzamos el mantenimiento general. Observen cómo el orquestador detecta automáticamente la tabla con actualizaciones masivas (`demo_heavy_updates`), procesa sus tuplas muertas en segundo plano, pero respeta estrictamente nuestro escudo de seguridad, ignorando por completo la tabla crítica `demo_escudo_historial` a pesar de estar llena de basura."*
 
 ```sql
-CALL public.sp_orchestrate_vacuum(
+CALL maint.sp_orchestrate_vacuum(
     p_scope => 'SMART_USER',
     p_profile => 'AGGRESSIVE',
     p_parallel_workers => 4,
@@ -112,7 +112,7 @@ CALL public.sp_orchestrate_vacuum(
 );
 
 -- Demuestra que el escudo funcionó:
-SELECT table_name, status, error_log FROM public.vacuum_tasks WHERE job_id = (SELECT MAX(job_id) FROM public.maintenance_jobs);
+SELECT table_name, status, error_log FROM maint.vacuum_tasks WHERE job_id = (SELECT MAX(job_id) FROM maint.jobs);
 
 ```
 
@@ -123,7 +123,7 @@ SELECT table_name, status, error_log FROM public.vacuum_tasks WHERE job_id = (SE
 > **Discurso para el cliente:** *"Ahora lanzamos el perfil `SMART_VACUUM_FULL`. El orquestador consultará la telemetría del Triage. Observen cómo ignora todas las tablas menores y se va directo como un francotirador a `demo_extreme_bloat`, porque sabe con certeza matemática que recuperará megabytes de espacio en disco."*
 
 ```sql
-CALL public.sp_orchestrate_vacuum(
+CALL maint.sp_orchestrate_vacuum(
     p_scope => 'SMART_USER',
     p_profile => 'SMART_VACUUM_FULL',
     p_threshold_pct => 0.20, -- Solo tablas con >20% de fragmentación libre
@@ -146,7 +146,7 @@ SELECT
     table_name, 
     status, 
     error_log 
-FROM public.vacuum_tasks 
+FROM maint.vacuum_tasks 
 WHERE status = 'FAILED' 
 ORDER BY task_id DESC LIMIT 1;
 
@@ -159,7 +159,7 @@ ORDER BY task_id DESC LIMIT 1;
 > **Discurso para el cliente:** *"Tenemos 5 minutos antes de un cierre contable y necesitamos limpiar SOLO las tablas de facturación sin que el orquestador escanee el resto del sistema. Usamos nuestro perfil `CUSTOM_LIST`."*
 
 ```sql
-CALL public.sp_orchestrate_vacuum(
+CALL maint.sp_orchestrate_vacuum(
     p_scope => 'CUSTOM_LIST',
     p_profile => 'BALANCED',
     p_parallel_workers => 2,
@@ -185,11 +185,10 @@ SELECT
     SUM(CASE WHEN t.status = 'FAILED' THEN 1 ELSE 0 END) AS "Errores",
     ROUND(EXTRACT(EPOCH FROM (j.ended_at - j.started_at))::numeric, 2) || ' seg' AS "Duración",
     j.started_at::TIME(0) AS "Hora Inicio"
-FROM public.maintenance_jobs j
-LEFT JOIN public.vacuum_tasks t ON j.job_id = t.job_id
+FROM maint.jobs j
+LEFT JOIN maint.vacuum_tasks t ON j.job_id = t.job_id
 GROUP BY j.job_id, j.job_type, j.status, j.parallel_workers, j.tables_processed, j.started_at, j.ended_at
 ORDER BY j.job_id DESC;
-
 ```
 
  
@@ -199,8 +198,8 @@ ORDER BY j.job_id DESC;
 
 ```sql
 
-select * FROM public.maintenance_jobs limit 10 ;
-select * FROM public.vacuum_tasks limit 10 ;
+select * FROM maint.jobs limit 10 ;
+select * FROM maint.vacuum_tasks limit 10 ;
 
 
 SELECT 
