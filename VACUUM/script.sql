@@ -186,7 +186,7 @@ COMMENT ON COLUMN maint.vacuum_full_triage.deep_free_percent IS 'Porcentaje exac
 CREATE INDEX IF NOT EXISTS idx_maint_jobs_type_action_id 
 ON maint.jobs (job_type, maintenance_action, job_id DESC);
 
-COMMENT ON INDEX public.idx_maint_jobs_type_action_id IS 'Query Index: Acelera la búsqueda retrospectiva (MAX job_id) para heredar el estado de los mantenimientos previos.';
+COMMENT ON INDEX maint.idx_maint_jobs_type_action_id IS 'Query Index: Acelera la búsqueda retrospectiva (MAX job_id) para heredar el estado de los mantenimientos previos.';
 
 
 -- 2. ÍNDICE ESTRUCTURAL Y DE CRUCE (Protección DML y JOINs)
@@ -194,7 +194,7 @@ COMMENT ON INDEX public.idx_maint_jobs_type_action_id IS 'Query Index: Acelera l
 CREATE INDEX IF NOT EXISTS idx_vacuum_tasks_job_schema_tbl 
 ON maint.vacuum_tasks (job_id, schema_name, table_name);
 
-COMMENT ON INDEX public.idx_vacuum_tasks_job_schema_tbl IS 'FK/JOIN Index: Mitiga Seq Scans durante el ON DELETE CASCADE del padre y optimiza el LEFT JOIN del historial.';
+COMMENT ON INDEX maint.idx_vacuum_tasks_job_schema_tbl IS 'FK/JOIN Index: Mitiga Seq Scans durante el ON DELETE CASCADE del padre y optimiza el LEFT JOIN del historial.';
 
 
 -- 3. ÍNDICE OPERATIVO DEL DESPACHADOR ASÍNCRONO (Protección de UPDATEs y Colas)
@@ -202,7 +202,7 @@ COMMENT ON INDEX public.idx_vacuum_tasks_job_schema_tbl IS 'FK/JOIN Index: Mitig
 CREATE INDEX IF NOT EXISTS idx_vacuum_tasks_job_status_id 
 ON maint.vacuum_tasks (job_id, status, task_id);
 
-COMMENT ON INDEX public.idx_vacuum_tasks_job_status_id IS 'DML Index: Optimiza radicalmente los UPDATEs masivos (SKIPPED_TIME_LIMIT), los COUNT(*) de hilos y la selección LIMIT 1 de la cola.';
+COMMENT ON INDEX maint.idx_vacuum_tasks_job_status_id IS 'DML Index: Optimiza radicalmente los UPDATEs masivos (SKIPPED_TIME_LIMIT), los COUNT(*) de hilos y la selección LIMIT 1 de la cola.';
 
 
 
