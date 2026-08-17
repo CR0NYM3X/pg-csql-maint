@@ -16,6 +16,7 @@
    críticas. Permite despachar hilos en segundo plano, capturar errores de forma aislada,
    evaluar fragmentación profunda y auto-recuperarse de bloqueos sin asfixiar el clúster.
 ========================================================================================= */
+BEGIN;
 
 -- DROP SCHEMA  maint;
 CREATE SCHEMA IF NOT EXISTS maint;
@@ -491,3 +492,5 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_vacuum FROM PUBLIC;
 REVOKE EXECUTE ON PROCEDURE maint.sp_populate_vacuum_triage FROM PUBLIC;
 
+
+COMMIT;
