@@ -168,19 +168,3 @@ SELECT cron.schedule_in_database(
 
 
 ---
-
-## **¿Por qué ANALYZE no tarda 1,000 veces más en una tabla de 10 TB que en una de 10 GB en PostgreSQL?**
-
-No, no tarda lo mismo, pero tampoco tarda proporcionalmente  1,000 veces más.  
- 
-### 1. Comando `ANALYZE` (Recolección de estadísticas)
-
-El comando `ANALYZE` estándar **no lee toda la tabla**. PostgreSQL utiliza un algoritmo de muestreo aleatorio (*random sampling*) basado en el parámetro `default_statistics_target`.
-
-* **Comportamiento:** Por defecto (`default_statistics_target = 100`), PostgreSQL lee únicamente unas **30,000 páginas/bloques aleatorios** de la tabla, sin importar si esta mide 50 GB, 1 TB o 20 TB.
-* **Diferencia de tiempo:**
-* En una tabla de **10 GB**, las páginas leídas probablemente estén guardadas en la memoria caché RAM (`shared_buffers` / *OS cache*), por lo que el comando tarda **milisegundos o pocos segundos**.
-* En una tabla de **10 TB**, las muestras aleatorias obligan al disco a realizar lecturas físicas no secuenciales (*random I/O*). El tiempo aumenta por la latencia del almacenamiento subyacente, tardando desde **algunos segundos hasta un par de minutos**, pero **no** horas.
-
-> **Excepción:** Si aumentas manualmente el `statistics_target` en columnas específicas para mayor precisión (ej. de 100 a 1000), el tamaño de la muestra crece y el tiempo de ejecución aumentará en consecuencia.
-
