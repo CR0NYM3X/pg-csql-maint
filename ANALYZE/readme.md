@@ -7,6 +7,15 @@ Es un **motor de mantenimiento asíncrono y paralelo para PostgreSQL** diseñado
 * **Control de recursos de bajo nivel:** Administra pools de hilos concurrentes, elimina procesos zombis automáticamente y realiza recolección de memoria (GC) para jamás saturar la RAM ni el CPU.
 * **Trazabilidad Forense:** Guarda un historial inmutable de cada intervención (filas afectadas, tiempos de ejecución y porcentaje de desfase `drift_pct`) en tablas de auditoría.
 
+```
+Futuras actualizaciones agregar y actualizar p_job_type :
+SMART_USER
+SMART_SYSTEM
+SMART_USER_SYSTEM
+ALL_USER_SYSTEM
+```
+
+
 ---
 
 ## 🚦 MODOS DE EJECUCIÓN (`p_job_type`)
