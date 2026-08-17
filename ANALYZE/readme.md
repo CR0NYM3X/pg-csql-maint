@@ -13,6 +13,8 @@ SMART_USER
 SMART_SYSTEM
 SMART_USER_SYSTEM
 ALL_USER_SYSTEM
+
+-- Tambien agregarle para que desde el inicio desde la primera ejecucion valide el tema de la hora y no guarde las tablas esto para que no ocupe espacio.
 ```
 
 
