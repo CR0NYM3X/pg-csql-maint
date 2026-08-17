@@ -114,13 +114,14 @@ COMMIT;
 Antes de disparar el orquestador, corre esta consulta para ver qué es lo que el motor de PostgreSQL está detectando. Aquí verás exactamente las matemáticas que usará nuestro orquestador:
 
 ```sql
-SELECT 
+SELECT
+    schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE relname LIKE 'lab_%'
+WHERE relname LIKE 'lab_%' OR schemaname  = 'lab'
 ORDER BY change_pct DESC NULLS LAST;
 
 ```
@@ -250,7 +251,6 @@ WHERE job_id = (SELECT MAX(job_id) FROM maint.jobs)
 ORDER BY schema_name, table_name, stage_number;
 
 select * from maint.jobs;
-
 select * from maint.analyze_tasks;
 
 ```
