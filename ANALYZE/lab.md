@@ -10,50 +10,51 @@ Ejecuta este script completo en tu entorno de desarrollo/pruebas.
 SET autovacuum = off;
 
 BEGIN;
+CREATE SCHEMA IF NOT EXISTS lab;
 
 -- ----------------------------------------------------------------------------
 -- FASE 1: CREACIÓN DE ESTRUCTURAS (10 Tablas)
 -- ----------------------------------------------------------------------------
-DROP TABLE IF EXISTS public.lab_clientes, public.lab_productos, public.lab_pedidos, 
-                     public.lab_detalle_pedidos, public.lab_pagos, public.lab_envios, 
-                     public.lab_inventario, public.lab_carritos, public.lab_sesiones, 
-                     public.lab_logs_auditoria CASCADE;
+DROP TABLE IF EXISTS lab.clientes, lab.productos, lab.pedidos, 
+                     lab.detalle_pedidos, lab.pagos, lab.envios, 
+                     lab.inventario, lab.carritos, lab.sesiones, 
+                     lab.logs_auditoria CASCADE;
 
-CREATE TABLE public.lab_clientes (id SERIAL PRIMARY KEY, nombre TEXT, estatus TEXT);
-CREATE TABLE public.lab_productos (id SERIAL PRIMARY KEY, sku TEXT, precio NUMERIC);
-CREATE TABLE public.lab_pedidos (id SERIAL PRIMARY KEY, cliente_id INT, total NUMERIC, estado TEXT);
-CREATE TABLE public.lab_detalle_pedidos (id SERIAL PRIMARY KEY, pedido_id INT, cantidad INT);
-CREATE TABLE public.lab_pagos (id SERIAL PRIMARY KEY, pedido_id INT, monto NUMERIC, metodo TEXT);
-CREATE TABLE public.lab_envios (id SERIAL PRIMARY KEY, pedido_id INT, guia TEXT, estado TEXT);
-CREATE TABLE public.lab_inventario (id SERIAL PRIMARY KEY, producto_id INT, stock INT);
-CREATE TABLE public.lab_carritos (id SERIAL PRIMARY KEY, cliente_id INT, fecha_creacion TIMESTAMP);
-CREATE TABLE public.lab_sesiones (id SERIAL PRIMARY KEY, token TEXT, ultima_actividad TIMESTAMP);
-CREATE TABLE public.lab_logs_auditoria (id SERIAL PRIMARY KEY, evento TEXT, fecha TIMESTAMP);
+CREATE TABLE lab.clientes (id SERIAL PRIMARY KEY, nombre TEXT, estatus TEXT);
+CREATE TABLE lab.productos (id SERIAL PRIMARY KEY, sku TEXT, precio NUMERIC);
+CREATE TABLE lab.pedidos (id SERIAL PRIMARY KEY, cliente_id INT, total NUMERIC, estado TEXT);
+CREATE TABLE lab.detalle_pedidos (id SERIAL PRIMARY KEY, pedido_id INT, cantidad INT);
+CREATE TABLE lab.pagos (id SERIAL PRIMARY KEY, pedido_id INT, monto NUMERIC, metodo TEXT);
+CREATE TABLE lab.envios (id SERIAL PRIMARY KEY, pedido_id INT, guia TEXT, estado TEXT);
+CREATE TABLE lab.inventario (id SERIAL PRIMARY KEY, producto_id INT, stock INT);
+CREATE TABLE lab.carritos (id SERIAL PRIMARY KEY, cliente_id INT, fecha_creacion TIMESTAMP);
+CREATE TABLE lab.sesiones (id SERIAL PRIMARY KEY, token TEXT, ultima_actividad TIMESTAMP);
+CREATE TABLE lab.logs_auditoria (id SERIAL PRIMARY KEY, evento TEXT, fecha TIMESTAMP);
 
-ALTER TABLE public.lab_clientes SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_productos SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_pedidos SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_detalle_pedidos SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_pagos SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_envios SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_inventario SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_carritos SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_sesiones SET (autovacuum_enabled = false);
-ALTER TABLE public.lab_logs_auditoria SET (autovacuum_enabled = false);
+ALTER TABLE lab.clientes SET (autovacuum_enabled = false);
+ALTER TABLE lab.productos SET (autovacuum_enabled = false);
+ALTER TABLE lab.pedidos SET (autovacuum_enabled = false);
+ALTER TABLE lab.detalle_pedidos SET (autovacuum_enabled = false);
+ALTER TABLE lab.pagos SET (autovacuum_enabled = false);
+ALTER TABLE lab.envios SET (autovacuum_enabled = false);
+ALTER TABLE lab.inventario SET (autovacuum_enabled = false);
+ALTER TABLE lab.carritos SET (autovacuum_enabled = false);
+ALTER TABLE lab.sesiones SET (autovacuum_enabled = false);
+ALTER TABLE lab.logs_auditoria SET (autovacuum_enabled = false);
 
 -- ----------------------------------------------------------------------------
 -- FASE 2: INYECCIÓN DE VOLUMEN (20,000 filas por tabla para superar filtro de 10k)
 -- ----------------------------------------------------------------------------
-INSERT INTO public.lab_clientes (nombre, estatus) SELECT 'Cliente ' || i, 'ACTIVO' FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_productos (sku, precio) SELECT 'SKU-' || i, RANDOM() * 1000 FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_pedidos (cliente_id, total, estado) SELECT i, RANDOM() * 500, 'NUEVO' FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_detalle_pedidos (pedido_id, cantidad) SELECT i, 1 FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_pagos (pedido_id, monto, metodo) SELECT i, 100, 'TARJETA' FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_envios (pedido_id, guia, estado) SELECT i, 'GUIA-'||i, 'PREPARANDO' FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_inventario (producto_id, stock) SELECT i, 100 FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_carritos (cliente_id, fecha_creacion) SELECT i, NOW() FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_sesiones (token, ultima_actividad) SELECT md5(i::text), NOW() FROM generate_series(1, 20000) i;
-INSERT INTO public.lab_logs_auditoria (evento, fecha) SELECT 'LOGIN', NOW() FROM generate_series(1, 20000) i;
+INSERT INTO lab.clientes (nombre, estatus) SELECT 'Cliente ' || i, 'ACTIVO' FROM generate_series(1, 20000) i;
+INSERT INTO lab.productos (sku, precio) SELECT 'SKU-' || i, RANDOM() * 1000 FROM generate_series(1, 20000) i;
+INSERT INTO lab.pedidos (cliente_id, total, estado) SELECT i, RANDOM() * 500, 'NUEVO' FROM generate_series(1, 20000) i;
+INSERT INTO lab.detalle_pedidos (pedido_id, cantidad) SELECT i, 1 FROM generate_series(1, 20000) i;
+INSERT INTO lab.pagos (pedido_id, monto, metodo) SELECT i, 100, 'TARJETA' FROM generate_series(1, 20000) i;
+INSERT INTO lab.envios (pedido_id, guia, estado) SELECT i, 'GUIA-'||i, 'PREPARANDO' FROM generate_series(1, 20000) i;
+INSERT INTO lab.inventario (producto_id, stock) SELECT i, 100 FROM generate_series(1, 20000) i;
+INSERT INTO lab.carritos (cliente_id, fecha_creacion) SELECT i, NOW() FROM generate_series(1, 20000) i;
+INSERT INTO lab.sesiones (token, ultima_actividad) SELECT md5(i::text), NOW() FROM generate_series(1, 20000) i;
+INSERT INTO lab.logs_auditoria (evento, fecha) SELECT 'LOGIN', NOW() FROM generate_series(1, 20000) i;
 
 COMMIT;
 
@@ -61,16 +62,16 @@ COMMIT;
 -- FASE 3: ESTABILIZACIÓN DEL MOTOR (Punto Cero)
 -- Hacemos un ANALYZE masivo para que el motor ponga n_mod_since_analyze en 0.
 -- ----------------------------------------------------------------------------
-ANALYZE public.lab_clientes;
-ANALYZE public.lab_productos;
-ANALYZE public.lab_pedidos;
-ANALYZE public.lab_detalle_pedidos;
-ANALYZE public.lab_pagos;
-ANALYZE public.lab_envios;
-ANALYZE public.lab_inventario;
-ANALYZE public.lab_carritos;
-ANALYZE public.lab_sesiones;
-ANALYZE public.lab_logs_auditoria;
+ANALYZE lab.clientes;
+ANALYZE lab.productos;
+ANALYZE lab.pedidos;
+ANALYZE lab.detalle_pedidos;
+ANALYZE lab.pagos;
+ANALYZE lab.envios;
+ANALYZE lab.inventario;
+ANALYZE lab.carritos;
+ANALYZE lab.sesiones;
+ANALYZE lab.logs_auditoria;
 
 -- ----------------------------------------------------------------------------
 -- FASE 4: SIMULACIÓN DE CAOS TRANSACCIONAL (El paso del tiempo)
@@ -78,24 +79,24 @@ ANALYZE public.lab_logs_auditoria;
 BEGIN;
 
 -- 1. lab_sesiones (90% de cambio) -> ALTA PRIORIDAD. Expira sesiones viejas.
-UPDATE public.lab_sesiones SET ultima_actividad = NOW() WHERE id <= 18000;
+UPDATE lab.sesiones SET ultima_actividad = NOW() WHERE id <= 18000;
 
 -- 2. lab_carritos (50% de cambio) -> ALTA PRIORIDAD. Borrado masivo de carritos abandonados.
-DELETE FROM public.lab_carritos WHERE id <= 10000;
+DELETE FROM lab.carritos WHERE id <= 10000;
 
 -- 3. lab_pedidos (15% de cambio) -> MEDIA PRIORIDAD. Pedidos que pasaron a ENVIADO.
-UPDATE public.lab_pedidos SET estado = 'ENVIADO' WHERE id <= 3000;
+UPDATE lab.pedidos SET estado = 'ENVIADO' WHERE id <= 3000;
 
 -- 4. lab_logs_auditoria (10% de cambio) -> MEDIA PRIORIDAD. Inserción de nuevos logs.
-INSERT INTO public.lab_logs_auditoria (evento, fecha) SELECT 'CLICK', NOW() FROM generate_series(20001, 22000);
+INSERT INTO lab.logs_auditoria (evento, fecha) SELECT 'CLICK', NOW() FROM generate_series(20001, 22000);
 
 -- 5. lab_inventario (6% de cambio) -> BAJA PRIORIDAD. Apenas pasa el umbral del 5%.
-UPDATE public.lab_inventario SET stock = stock - 1 WHERE id <= 1200;
+UPDATE lab.inventario SET stock = stock - 1 WHERE id <= 1200;
 
 -- ================== TABLAS TRAMPA (DEBEN SER IGNORADAS) ==================
 
 -- 6. lab_clientes (2% de cambio) -> IGNORADA. No llega al umbral del 5%.
-UPDATE public.lab_clientes SET estatus = 'INACTIVO' WHERE id <= 400;
+UPDATE lab.clientes SET estatus = 'INACTIVO' WHERE id <= 400;
 
 -- 7. lab_productos (0% de cambio) -> IGNORADA. El catálogo no mutó hoy.
 -- (Sin operaciones DML)
@@ -216,7 +217,7 @@ ORDER BY query_start ASC;
 
 ---
 
-### 2. MONITOREO FORENSE DESDE `public.analyze_tasks`
+### 2. MONITOREO FORENSE DESDE `maint.analyze_tasks`
 
 *(Monitorea el progreso de la cola, qué tabla está corriendo, cuál terminó, cuál falló y el porcentaje de cambio/desfase)*
 
@@ -235,7 +236,7 @@ SELECT
     COALESCE(t.error_log, 'Ninguno') AS detalle_error
 FROM maint.analyze_tasks t
 JOIN maint.jobs j ON t.job_id = j.job_id
-WHERE t.job_id = (SELECT MAX(job_id) FROM public.jobs)
+WHERE t.job_id = (SELECT MAX(job_id) FROM maint.jobs)
 ORDER BY t.task_id ASC;
 
 
@@ -245,7 +246,7 @@ SELECT
     status AS estatus,
     ROUND(EXTRACT(EPOCH FROM (ended_at - started_at))::numeric, 3) AS duracion_segundos
 FROM maint.analyze_tasks
-WHERE job_id = (SELECT MAX(job_id) FROM public.jobs)
+WHERE job_id = (SELECT MAX(job_id) FROM maint.jobs)
 ORDER BY schema_name, table_name, stage_number;
 
 select * from maint.jobs;
