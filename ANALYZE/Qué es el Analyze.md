@@ -3,7 +3,6 @@
 ### 1. ¿Qué es `ANALYZE` y por qué surge la necesidad?
 
 
-
 Para entender por qué existe `ANALYZE`, primero debes entender que **PostgreSQL es ciego**.
 Cuando tú envías una consulta (`SELECT * FROM ventas WHERE total > 1000`), el cerebro del motor —llamado **Optimizador de Consultas (Query Planner)**— tiene que decidir cómo encontrar esos datos: ¿Usa un índice? ¿Escanea todo el disco duro? ¿Hace un *Hash Join* o un *Nested Loop*?
 
@@ -143,3 +142,103 @@ Tu orquestador inteligente (`sp_orchestrate_maintenance`) debe tener métricas d
 * **Gatillo de ANALYZE:** Si `n_mod_since_analyze` (filas insertadas/modificadas) supera el 10% -> Ejecuta `ANALYZE`.
 
 Si una tabla sufre un borrado masivo, activará ambos gatillos. Si solo recibe inserciones, activará solo el segundo. Eficiencia pura.
+
+
+
+
+###  ¿Cómo interactúan el VM y el ANALYZE?
+
+**Habla Pedro (Ingeniero Core):**
+
+Para entender esto, hay que separar dos conceptos físicos: **Qué bloques lee** y **Cuánto CPU gasta al leerlos**.
+
+**1. El Mapa de Visibilidad NO altera la ruta (La Muestra es Inviolable)**
+El algoritmo matemático de `ANALYZE` (basado en el Algoritmo Z de Vitter) necesita una muestra 100% aleatoria y uniforme para que la estadística sea real. Por lo tanto, el Mapa de Visibilidad **no le dice a ANALYZE qué bloques leer**. Si el algoritmo decide aleatoriamente que debe leer el bloque 500, va a leer el bloque 500, sin importarle lo que diga el Mapa de Visibilidad.
+
+**2. El Mapa de Visibilidad SÍ altera el consumo de CPU (El Fast-Path)**
+Aquí está la magia técnica. Cuando `ANALYZE` abre el bloque 500 que eligió al azar, tiene que revisar fila por fila para ver si están vivas o muertas, leyendo los IDs de transacción (`xmin` y `xmax`) y comparándolos con el *Snapshot* actual del motor. Esto consume muchísima CPU.
+
+Pero, **si tú hiciste un VACUUM antes**, ese VACUUM actualizó el Mapa de Visibilidad y le puso una "bandera" al bloque 500 diciendo: *"Este bloque es All-Visible (Todas sus filas están vivas y confirmadas)"*.
+Cuando `ANALYZE` abre ese bloque y ve esa bandera, **se salta por completo las validaciones de control de concurrencia (MVCC)**. No revisa los IDs de transacción; simplemente captura los datos al vuelo con un gasto de CPU casi de cero.
+
+
+
+
+
+----
+
+
+ 
+
+###   1. El Radar de Telemetría (La Vista Oficial)
+
+**Habla Mauricio (Estandarización y QA):**
+
+PostgreSQL tiene una vista nativa en memoria RAM que actúa como la caja negra del servidor: `pg_stat_user_tables`. Ahí vive toda la información forense de tus tablas.
+
+No necesitas inventar nada, aquí tienes la **Consulta de Auditoría de Grado Diamante**. Este script calcula dinámicamente el porcentaje de desfase estadístico (*Drift*) de todas tus tablas y te las ordena desde la más crítica hasta la más sana.
+
+```sql
+SELECT 
+    schemaname || '.' || relname AS tabla,
+    n_live_tup AS filas_vivas,
+    n_dead_tup AS filas_muertas,
+    n_mod_since_analyze AS modif_desde_ultimo_analyze,
+    -- Calculamos el % de desfase (modificaciones / filas vivas)
+    COALESCE(ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2), 0) AS porcentaje_desfase,
+    last_analyze AS ultimo_analyze_manual,
+    last_autoanalyze AS ultimo_analyze_automatico,
+    -- Vemos cuándo fue la última vez que el motor la tocó en general
+    GREATEST(last_analyze, last_autoanalyze) AS fecha_estadistica_mas_reciente
+FROM 
+    pg_stat_user_tables
+WHERE 
+    n_live_tup > 0 -- Filtramos tablas vacías para no hacer ruido
+ORDER BY 
+    porcentaje_desfase DESC;
+
+```
+
+**¿Qué estás viendo aquí?**
+
+* **`n_live_tup`:** Cuántos registros vivos tiene tu tabla hoy.
+* **`n_mod_since_analyze`:** La métrica más importante. Cuenta cuántos `INSERT`, `UPDATE` o `DELETE` han ocurrido desde la última vez que alguien (o el sistema) hizo un `ANALYZE`.
+* **`GREATEST(...)`:** Te dice la fecha y hora exacta de la última fotografía estadística, sin importar si la tomaste tú a mano o el autovacuum en segundo plano.
+ 
+
+### 🧮 2. La Matemática del Disparo (¿Cuándo ocupa ANALYZE?)
+
+**Habla Pedro (Ingeniero Core):**
+
+Preguntaste qué cantidad o porcentaje de filas se toman para considerar que una tabla *necesita* un `ANALYZE`. El motor de PostgreSQL (específicamente el demonio `autovacuum`) no adivina, usa una ecuación matemática estricta basada en dos parámetros de configuración:
+
+**Fórmula de disparo:**
+`Umb_Base + (Factor_Escala * Filas_Vivas)`
+
+Por defecto en PostgreSQL, estos valores son:
+
+* `autovacuum_analyze_threshold` = **50 filas** (Umb_Base)
+* `autovacuum_analyze_scale_factor` = **0.1** (10% de Factor_Escala)
+
+**Ejemplo táctico:**
+Si tu tabla tiene **100,000 filas vivas** (`n_live_tup`), la ecuación dice:
+`50 + (0.10 * 100,000) = 10,050`
+
+Esto significa que cuando la columna `n_mod_since_analyze` de la consulta de Mauricio llegue a **10,050**, el motor dirá: *"¡Alerta! Llegamos al límite, disparen un Auto-Analyze de inmediato"*. En la práctica, esto equivale a esperar que cambie **un poco más del 10%** de la tabla.
+
+ 
+### 🛡️ 3. La Matriz de Riesgo VANGUARD (Rangos de Salud)
+
+**Habla Rodrigo (Gatekeeper Crítico):**
+
+Ahora que tienes los números, te voy a enseñar a interpretarlos como un director de infraestructura. Basado en el `porcentaje_desfase` de la consulta anterior, esta es la regla de fuego para intervenir:
+
+| Rango de Desfase (%) | Estado Operativo | Diagnóstico y Acción del DBA SQUAD |
+| --- | --- | --- |
+| **0% a 5%** | **INSIGNIFICANTE** (Diamante) | **Acción:** Ninguna. El optimizador tiene un mapa matemáticamente perfecto de los datos. Tus índices se están usando al 100% de su capacidad. |
+| **5% a 10%** | **NORMAL** (Vigilancia) | **Acción:** Ninguna. Es el desgaste natural de una base de datos viva. El motor sabe que los datos están cambiando, pero el margen de error estadístico aún es tolerable para los planes de ejecución. |
+| **10% a 20%** | **MANTENIMIENTO REQUERIDO** | **Acción:** Disparo de orquestador. En teoría, el autovacuum ya debería haber saltado al cruzar el 10%. Si tienes tablas atascadas aquí, significa que tus configuraciones por defecto no están dando abasto. Requiere un `ANALYZE` dirigido. |
+| **> 20%** | **CRÍTICO** (Peligro de Caída) | **Acción:** Intervención manual inmediata. Las estadísticas están podridas. El Optimizador está ciego y podría empezar a elegir *Sequential Scans* masivos en lugar de usar índices, congelando la CPU del servidor. Tu autovacuum está ahogado. |
+
+**El Veredicto Final:**
+Si ejecutas la consulta de Mauricio y ves tablas masivas en rojo (más del 20% de desfase), significa que tu configuración del S.O. o de los *workers* del autovacuum está mal ajustada, y los demonios de fondo no están logrando seguirle el ritmo a la aplicación.
