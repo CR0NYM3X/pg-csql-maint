@@ -124,8 +124,8 @@ INFO:  =========================================================
 
 **MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
 ```sql
-SELECT pid 
-FROM maint.pg_background_launch(
+SELECT * 
+FROM public.pg_background_launch(
     $$
       CALL maint.sp_orchestrate_analyze(
           p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
