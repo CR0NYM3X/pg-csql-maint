@@ -1,4 +1,6 @@
 
+🛡️ pg-csql-analyze
+
 ## 🛠️ ¿PARA QUÉ SIRVE EL ORQUESTADOR analyze?
 
 Es un **motor de mantenimiento asíncrono y paralelo para PostgreSQL** diseñado para mantener al optimizador de consultas en su punto máximo de rendimiento.
