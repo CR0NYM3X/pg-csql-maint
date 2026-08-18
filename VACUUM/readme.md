@@ -2,15 +2,15 @@
 
 # 🛡️ pg-csql-vacuum
 
-**Predictive Triage & Async Maintenance Engine for Enterprise PostgreSQL.**
+ 
 
-**pg-csql-maint** es un orquestador de mantenimiento asíncrono y predictivo para bases de datos transaccionales masivas. Diseñado para automatizar la limpieza de *bloat* (basura), refrescar estadísticas y ejecutar reestructuraciones físicas quirúrgicas.
+**pg-csql-vacuum** es un orquestador de mantenimiento asíncrono y predictivo para bases de datos transaccionales masivas. Diseñado para automatizar la limpieza de *bloat* (basura), refrescar estadísticas y ejecutar reestructuraciones físicas quirúrgicas.
 
-## 🥊 Cuadro Comparativo: ¿Por qué usar pg-csql-maint?
+## 🥊 Cuadro Comparativo: ¿Por qué usar pg-csql-vacuum?
 
 La industria suele apoyarse en herramientas externas para combatir la fragmentación, pero exigen modificar tu esquema o compilar binarios de terceros. Así nos comparamos con los líderes del mercado:
 
-| Característica / Herramienta | `pg-csql-maint` 🛡️ | `pg_repack` 📦 | `pg_squeeze` 🗜️ |
+| Característica / Herramienta | `pg-csql-vacuum` 🛡️ | `pg_repack` 📦 | `pg_squeeze` 🗜️ |
 | --- | --- | --- | --- |
 | **Requiere Primary Key (PK)** | **NO** (Trabaja con cualquier esquema) | SÍ (Falla si la tabla no tiene PK/UK) | SÍ (Dependencia de PK o REPLICA IDENTITY) |
 | **Dependencia de Binarios** | **NO** (Usa extensiones nativas `pg_background`, `pgstattuple`) | SÍ (Requiere compilar en el SO Linux) | SÍ (Requiere binarios externos y decoding) |
