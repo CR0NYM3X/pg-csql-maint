@@ -9,6 +9,10 @@ Cuando tú envías una consulta (`SELECT * FROM ventas WHERE total > 1000`), el 
 El Optimizador no puede leer la tabla entera en ese milisegundo para decidir. Necesita un mapa previo. **`ANALYZE` es el cartógrafo del motor.**
 Es el comando que escanea las tablas y recolecta estadísticas matemáticas sobre los datos, guardándolas en el catálogo interno `pg_statistic`. Sin estas estadísticas, el Optimizador adivinaría a ciegas, eligiendo rutas desastrosas que congelarían tu servidor.
 
+Realizar el analyze tambien actualiza en memoria  la vista pg_stat_user_tables y su columna importante n_mod_since_analyze.
+Tambien llena la tabla  pg_class y columna relpages,reltuples 
+
+
 
 ### 2. ¿Cómo funciona internamente? (El Algoritmo)
 
