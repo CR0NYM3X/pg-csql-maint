@@ -133,7 +133,6 @@ Debes separar tu orquestador en dos cerebros independientes basándote en la fí
  
 🛡️ **EL VEREDICTO DEL GATEKEEPER**
 
-**Habla Rodrigo (Gatekeeper Crítico):**
 Tu conclusión es brillante. No dispares artillería pesada (`VACUUM`) donde solo necesitas un francotirador estadístico (`ANALYZE`).
 
 Tu orquestador inteligente (`sp_orchestrate_maintenance`) debe tener métricas de disparo separadas:
@@ -147,8 +146,6 @@ Si una tabla sufre un borrado masivo, activará ambos gatillos. Si solo recibe i
 
 
 ###  ¿Cómo interactúan el VM y el ANALYZE?
-
-**Habla Pedro (Ingeniero Core):**
 
 Para entender esto, hay que separar dos conceptos físicos: **Qué bloques lee** y **Cuánto CPU gasta al leerlos**.
 
