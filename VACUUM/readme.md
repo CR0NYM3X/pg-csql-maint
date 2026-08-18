@@ -1,6 +1,6 @@
  
 
-# 🛡️ pg-csql-maint
+# 🛡️ pg-csql-vacuum
 
 **Predictive Triage & Async Maintenance Engine for Enterprise PostgreSQL.**
 
