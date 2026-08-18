@@ -172,7 +172,6 @@ Cuando `ANALYZE` abre ese bloque y ve esa bandera, **se salta por completo las v
 
 ###   1. El Radar de Telemetría (La Vista Oficial)
 
-**Habla Mauricio (Estandarización y QA):**
 
 PostgreSQL tiene una vista nativa en memoria RAM que actúa como la caja negra del servidor: `pg_stat_user_tables`. Ahí vive toda la información forense de tus tablas.
 
@@ -208,8 +207,6 @@ ORDER BY
 
 ### 🧮 2. La Matemática del Disparo (¿Cuándo ocupa ANALYZE?)
 
-**Habla Pedro (Ingeniero Core):**
-
 Preguntaste qué cantidad o porcentaje de filas se toman para considerar que una tabla *necesita* un `ANALYZE`. El motor de PostgreSQL (específicamente el demonio `autovacuum`) no adivina, usa una ecuación matemática estricta basada en dos parámetros de configuración:
 
 **Fórmula de disparo:**
@@ -229,7 +226,6 @@ Esto significa que cuando la columna `n_mod_since_analyze` de la consulta de Mau
  
 ### 🛡️ 3. La Matriz de Riesgo VANGUARD (Rangos de Salud)
 
-**Habla Rodrigo (Gatekeeper Crítico):**
 
 Ahora que tienes los números, te voy a enseñar a interpretarlos como un director de infraestructura. Basado en el `porcentaje_desfase` de la consulta anterior, esta es la regla de fuego para intervenir:
 
@@ -240,5 +236,76 @@ Ahora que tienes los números, te voy a enseñar a interpretarlos como un direct
 | **10% a 20%** | **MANTENIMIENTO REQUERIDO** | **Acción:** Disparo de orquestador. En teoría, el autovacuum ya debería haber saltado al cruzar el 10%. Si tienes tablas atascadas aquí, significa que tus configuraciones por defecto no están dando abasto. Requiere un `ANALYZE` dirigido. |
 | **> 20%** | **CRÍTICO** (Peligro de Caída) | **Acción:** Intervención manual inmediata. Las estadísticas están podridas. El Optimizador está ciego y podría empezar a elegir *Sequential Scans* masivos en lugar de usar índices, congelando la CPU del servidor. Tu autovacuum está ahogado. |
 
-**El Veredicto Final:**
-Si ejecutas la consulta de Mauricio y ves tablas masivas en rojo (más del 20% de desfase), significa que tu configuración del S.O. o de los *workers* del autovacuum está mal ajustada, y los demonios de fondo no están logrando seguirle el ritmo a la aplicación.
+
+
+----
+
+
+##  *"¿Qué pasa con la vista `pg_stat_user_tables` si se reinicia el servidor, ya que está en la memoria RAM?"*.
+
+
+### 🧠 EL MECANISMO INTERNO: RAM vs. Disco
+ 
+Tienes razón, mantener estadísticas en vivo (como `n_mod_since_analyze`) requiere velocidad absoluta. Si el motor escribiera en el disco duro cada vez que ocurre un simple `UPDATE` en una tabla, el rendimiento del servidor se desplomaría. Por eso, PostgreSQL (a partir de la versión 15) mantiene todas estas métricas exclusivamente en la **Memoria Compartida (Shared Memory / RAM)**.
+
+Pero PostgreSQL no es ingenuo. El comportamiento de esta vista dependerá exactamente de **cómo** se reinicie el servidor.
+ 
+
+### 🔌 ESCENARIO 1: El Reinicio Limpio (Clean Shutdown)
+ 
+Si ejecutas un reinicio ordenado y diplomático desde el sistema operativo (por ejemplo: `systemctl restart postgresql` o `pg_ctl stop`), PostgreSQL activa su protocolo de apagado seguro.
+
+1. El motor detiene las conexiones nuevas.
+2. Termina las transacciones en curso.
+3. **El Salvavidas:** Antes de apagar la memoria RAM, el motor "imprime" todas las métricas de `pg_stat_user_tables` en un archivo físico en el disco duro (ubicado en el directorio `pg_stat` dentro de tu *data directory*).
+4. Cuando el servidor vuelve a encender, lee ese archivo físico, lo vuelve a cargar en la memoria RAM y elimina el archivo.
+5. **Resultado:** **No pierdes absolutamente nada.** Tu contador de modificaciones seguirá exactamente donde se quedó.
+ 
+### 💥 ESCENARIO 2: La Caída Catastrófica (Hard Crash)
+ 
+Aquí es donde la arquitectura se pone a prueba. Si el servidor sufre un corte de energía físico, si el sistema operativo se queda sin memoria y el *OOM Killer* asesina el proceso de PostgreSQL, o si un administrador novato ejecuta un `kill -9` (terminación forzada):
+
+1. PostgreSQL no tiene tiempo de ejecutar su protocolo de apagado.
+2. La Memoria Compartida (RAM) se volatiliza al instante.
+3. El archivo de salvavidas en el disco duro **jamás se crea**.
+4. Al encender de nuevo, PostgreSQL busca el archivo de estadísticas, no lo encuentra, e inicia la vista de memoria desde cero.
+5. **Resultado:** **Amnesia Estadística.** Todos los contadores (`n_live_tup`, `n_mod_since_analyze`, etc.) **se resetean a CERO**.
+
+ 
+
+### 🛡️ EL PROTOCOLO DEL GATEKEEPER (Regla Post-Crash)
+ 
+
+Este es el verdadero peligro que asusta a los DBAs novatos. Si el servidor sufre un *Hard Crash* y las estadísticas se resetean a cero, **el Autovacuum se vuelve ciego**.
+
+Imagina que una tabla tuya tenía 5 millones de modificaciones y estaba a punto de activar el Autovacuum. Se va la luz, el servidor reinicia, y el contador vuelve a cero. El motor ahora cree que esa tabla está "limpia" y no la va a analizar hasta que acumule otros 5 millones de modificaciones nuevas. Tu optimizador tomará decisiones desastrosas.
+
+**La Regla de Fuego VANGUARD:**
+Si tu servidor sufre una caída abrupta o un *Hard Crash*, la primera orden táctica antes de abrir las conexiones a los usuarios es forzar la reconstrucción del mapa estadístico.
+
+Debes lanzar un análisis global a nivel de base de datos desde la terminal:
+
+```bash
+### Ejecuta el mantenimiento ANALYZE STAGES
+    nohup bash -c '
+    export PGPASSWORD="-xm3nxhu5hI:9P,"
+
+    export PGOPTIONS="-c max_parallel_maintenance_workers=8 -c maintenance_work_mem=15GB -c tcp_keepalives_idle=5 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3"
+
+    echo "=== INICIO VACUUM / ANALYZE: $(date) ==="
+
+    /usr/pgsql-15/bin/vacuumdb \
+    -h 10.0.0.100 \
+    -U postgres \
+    -d db_test \
+    -j 18 \
+    #-v \
+    -e \
+    --analyze-in-stages # Post-restauración, migraciones o recuperación de desastres.
+    # --analyze-only # Mantenimiento de rutina nocturno.
+    
+    echo "=== FIN VACUUM / ANALYZE: $(date) ==="
+    ' > analyze_20260803.log 2>&1 &    
+```
+
+*(Este comando lanza hilos en paralelo para recalcular el `ANALYZE` de todas tus tablas y reconstruir la memoria RAM forense antes de que el tráfico productivo golpee al optimizador ciego).*
