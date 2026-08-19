@@ -145,3 +145,50 @@ CALL public.sp_orchestrate_vacuum(
 ```
 
 ---
+
+
+
+#### 2. Modos Ejecuta y Suelta
+
+
+**MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
+```sql
+SELECT * FROM public.pg_background_launch(
+    $$
+      CALL maint.sp_orchestrate_vacuum(
+          p_scope            => 'ALL_USER',       -- Alcance: Esquemas de usuario. No aplica a esquemas del sistema ('pg_catalog') ni TOAST.
+          p_profile          => 'BALANCED',       -- Perfil diario sin bloqueos. Aplica para mantenimiento rutinario; no aplica para reescribir tablas en disco (usar 'SMART_VACUUM_FULL').
+          p_parallel_workers => 8,                -- 8 hilos en paralelo. Aplica en perfiles normales; inactivo en 'VACUUM_FULL' (el motor lo fuerza automáticamente a 1 hilo).
+          p_threshold_pct    => 0.05,             -- Umbral del 5% de basura. Aplica para encolar la tabla; no aplica en 'SMART_VACUUM_FULL' (ahí evalúa % de espacio libre en disco).
+          p_min_dead_tup     => 5000,             -- Mínimo 5,000 tuplas muertas. Aplica en modo 'SMART' para omitir tablas chicas; no aplica en alcances masivos no-SMART.
+          p_cutoff_time      => '05:55:00'::TIME, -- [KILL SWITCH]: Freno a las 05:55 AM. Aplica para no invadir el horario laboral; no aplica si se coloca en NULL (sin límite de tiempo).
+          p_verbose          => FALSE             -- Modo silencioso. Aplica en cronjobs de producción; usar TRUE solo para depuración manual en terminal.
+      );
+    $$
+);
+
+select * FROM public.pg_background_result(2102986)  AS (result TEXT);
+```
+
+**MÉTODO 2: LA AUTOMATIZACIÓN ABSOLUTA (Vía pg_cron)**
+```SQL
+-- Programa el orquestador para que despierte todos los días a las 02:00 AM
+SELECT cron.schedule_in_database(
+    'vanguard_smart_analyze_daily', 
+    '0 2 * * *', 
+    $$ 
+    CALL maint.sp_orchestrate_analyze(
+        p_job_type         => 'SMART', 
+        p_parallel_workers => 4, 
+        p_verbose          => FALSE, 
+        p_threshold_pct    => 0.05, 
+        p_min_rows         => 1000,
+        p_cutoff_time      => '06:00:00'::TIME
+    ); 
+    $$,
+    'mi_base_de_datos', 
+    'postgres', 
+    true
+);
+```
+
