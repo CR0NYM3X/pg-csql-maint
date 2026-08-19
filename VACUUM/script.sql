@@ -370,7 +370,7 @@ BEGIN
     -- Aplica algoritmos de negocio cruzando estadisticas nativas (pg_stat_all_tables), el triage dominical
     -- y las reglas de lista blanca/negra de seguridad (maintenance_filters).
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
-    SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, ROUND(COALESCE(vft.deep_free_percent, (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100), 2)
+    SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, ROUND(COALESCE(vft.deep_free_percent, (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
     FROM pg_stat_all_tables st
     LEFT JOIN maint.vacuum_tasks prev_t ON prev_t.job_id = v_last_job_id AND prev_t.schema_name = st.schemaname AND prev_t.table_name = st.relname
     LEFT JOIN maint.filters mf ON mf.schema_name = st.schemaname AND mf.table_name = st.relname
