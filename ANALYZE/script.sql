@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS maint.analyze_tasks (
     filas_afectadas BIGINT,              
     drift_pct NUMERIC(5,2),              
     status VARCHAR(20) DEFAULT 'PENDING', 
-    slot_id INT,                         
+    --slot_id INT,                         
     child_pid INT,
     stage_number INT DEFAULT 1,
     started_at TIMESTAMPTZ,
@@ -82,7 +82,7 @@ COMMENT ON COLUMN maint.analyze_tasks.total_filas IS 'Tuplas vivas (n_live_tup) 
 COMMENT ON COLUMN maint.analyze_tasks.filas_afectadas IS 'Tuplas modificadas (n_mod_since_analyze) detectadas al momento de encolar.';
 COMMENT ON COLUMN maint.analyze_tasks.drift_pct IS 'Porcentaje de desfase estadístico calculado (filas_afectadas / total_filas).';
 COMMENT ON COLUMN maint.analyze_tasks.status IS 'Estado de la tarea (PENDING, RUNNING, SUCCESS, FAILED, SKIPPED_TIME_LIMIT).';
-COMMENT ON COLUMN maint.analyze_tasks.slot_id IS 'Identificador de la ranura de concurrencia asignada para la gestión estricta de hilos.';
+--COMMENT ON COLUMN maint.analyze_tasks.slot_id IS 'Identificador de la ranura de concurrencia asignada para la gestión estricta de hilos.';
 COMMENT ON COLUMN maint.analyze_tasks.child_pid IS 'Identificador del proceso (PID) del worker de fondo lanzado en Linux.';
 COMMENT ON COLUMN maint.analyze_tasks.stage_number IS 'Fase de ejecución actual (Vital para la orquestación escalonada del modo PRELOAD).';
 COMMENT ON COLUMN maint.analyze_tasks.started_at IS 'Marca de tiempo del inicio de la ejecución individual de la tabla.';
