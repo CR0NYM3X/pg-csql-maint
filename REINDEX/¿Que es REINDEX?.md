@@ -76,3 +76,59 @@ Acabas de presenciar el Riesgo del "Índice Zombi". Como la operación se interr
 
 **"¿REINDEX afecta a mis archivos WAL y a la replicación?"**
 Absolutamente. La creación del nuevo índice es una escritura física masiva. Cada bloque del nuevo árbol de datos se escribe en el archivo WAL y se transmite por la red hacia tus réplicas. Si el índice pesa 20 GB, generarás al menos 20 GB de tráfico de replicación. Planifica la concurrencia asumiendo este impacto en tu red de alta disponibilidad.
+
+
+---
+
+# **bloat en indices**
+
+**los índices en PostgreSQL también sufren de *bloat* (hinchamiento/fragmentación)**, y en muchos casos el problema es más severo que en las propias tablas.
+
+### 1. ¿Por qué ocurre el *bloat* en los índices?
+
+Cuando realizas operaciones de `UPDATE` o `DELETE` en una tabla, el motor no elimina los datos físicamente de inmediato. En los índices (especialmente los B-Tree):
+
+* Las claves antiguas que apuntan a registros eliminados quedan marcadas como muertas.
+* Las operaciones intensivas de inserción o modificación dividen las páginas del índice (*page splits*).
+* Si estas páginas divididas quedan medio vacías y el patrón de datos no vuelve a rellenarlas exactamente en ese rango, **el espacio queda desperdiciado de forma permanente dentro de la estructura de árbol del índice**.
+
+---
+
+### 2. ¿Cómo funciona `VACUUM` en los índices?
+
+El comportamiento del espacio recuperado varía según la operación:
+
+| Operación | ¿Cómo afecta al índice? | ¿Reutiliza el espacio? | ¿Reduce el tamaño del archivo en disco? |
+| --- | --- | --- | --- |
+| **`VACUUM` (Normal/Autovacuum)** | Limpia las punteros a tuplas muertas en las páginas del índice y marca la página como utilizable. | **Sí.** Si ingresan nuevos datos cuyos valores correspondan a esa misma página, PostgreSQL reutilizará ese espacio. | **No.** El archivo `.ibd`/filenode del índice en disco **no reduce su tamaño**. El espacio inflado se queda reservado dentro del índice. |
+| **`REINDEX` / `VACUUM FULL**` | Destruye el índice antiguo y lo reconstruye desde cero de forma contigua. | **Sí.** Elimina todo el espacio desperdiciado por completo. | **Sí.** Libera el espacio en el sistema de archivos del sistema operativo inmediatamente. |
+
+---
+
+### 3. El problema del *Bloat* irreversible mediante `VACUUM` simple
+
+En tablas con alta volatilidad o cuando los valores insertados son monótonos/crecientes (como un `TIMESTAMP` o una secuencia `SERIAL`):
+
+1. `VACUUM` eliminará los punteros viejos.
+2. Sin embargo, las claves viejas estaban en páginas con valores bajos (ej. IDs del 1 al 1000).
+3. Si los nuevos datos que estás insertando tienen IDs más altos (ej. IDs del 5000 en adelante), **PostgreSQL jamás volverá a insertar datos en las páginas vacías del rango bajo**.
+4. Esas páginas quedan "congeladas" y vacías dentro del índice, causando un *bloat* que `VACUUM` estándar no puede solucionar.
+
+---
+
+### 4. ¿Cómo solucionar el *bloat* en índices sin bloquear la base de datos?
+
+Hacer `VACUUM FULL` o `REINDEX` tradicional bloquea las lecturas y escrituras en la tabla (`ACCESS EXCLUSIVE LOCK`), lo cual no es viable en producción.
+
+La solución recomendada en entornos activos es reconstruir el índice de forma concurrente:
+
+```sql
+-- En PostgreSQL 12 o superior:
+REINDEX INDEX CONCURRENTLY nombre_del_indice;
+
+-- O reindexar la tabla entera sin bloquear lecturas ni escrituras:
+REINDEX TABLE CONCURRENTLY nombre_de_la_tabla;
+
+```
+
+> **Nota:** `REINDEX CONCURRENTLY` crea una versión nueva del índice en segundo plano mientras la tabla sigue recibiendo transacciones, y intercambia el índice viejo por el nuevo al terminar sin causar caídas de servicio.
