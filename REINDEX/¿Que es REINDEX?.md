@@ -132,3 +132,62 @@ REINDEX TABLE CONCURRENTLY nombre_de_la_tabla;
 ```
 
 > **Nota:** `REINDEX CONCURRENTLY` crea una versión nueva del índice en segundo plano mientras la tabla sigue recibiendo transacciones, y intercambia el índice viejo por el nuevo al terminar sin causar caídas de servicio.
+
+
+---
+
+
+**Cálculo de *Bloat* en Índices B-Tree con `pgstattuple**`
+
+Los índices B-Tree sufren fragmentación cuando las operaciones de `UPDATE` o `DELETE` dejan "páginas muertas" (*deleted pages*) o páginas parcialmente vacías.
+
+Para medir el *bloat* en estos índices de forma exacta, PostgreSQL ofrece la función `pgstatindex()` dentro de la extensión oficial `pgstattuple`.
+
+---
+
+**1. Consulta de Diagnóstico (Índices B-Tree)**
+
+En un índice sano, la densidad promedio de las hojas (**`avg_leaf_density`**) oscila entre el **70% y el 90%**. El porcentaje restante representa espacio desperdiciado (*bloat*).
+
+```sql
+SELECT 
+    pg_size_pretty(index_size) AS tamano_total,
+    ROUND(index_size / 1024.0 / 1024.0, 2) AS tamano_mb,
+    ROUND((index_size * ((100 - avg_leaf_density) / 100.0)) / 1024.0 / 1024.0, 2) AS bloat_estimado_mb,
+    ROUND((100 - avg_leaf_density)::numeric, 2) AS bloat_porcentaje,
+    leaf_pages,
+    empty_pages,
+    deleted_pages
+FROM pgstatindex('nombre_del_indice');
+
+```
+
+> **Métricas clave a revisar:**
+> * **`avg_leaf_density`**: Si cae por debajo del **60% - 70%**, el índice requiere mantenimiento.
+> * **`deleted_pages` / `empty_pages**`: Muestran las páginas que ya no contienen datos vivos y representan *bloat* directo.
+> 
+> 
+
+---
+
+**2. Diagnóstico para otros tipos de índice**
+
+La función `pgstatindex()` está diseñada únicamente para índices **B-Tree**. Si utilizas otros tipos de estructuras, usa la función correspondiente:
+
+| Tipo de Índice | Función Dedicada |
+| --- | --- |
+| **GIN** | `pgstatginindex('nombre_indice_gin')` |
+| **Hash** | `pgstathashindex('nombre_indice_hash')` |
+
+---
+
+**3. Estrategia de Remediación**
+
+Cuando el **`bloat_porcentaje` supere el 30%**, se recomienda reconstruir el índice para liberar el espacio en disco y recuperar la eficiencia de lectura.
+
+Ejecuta una reconstrucción en segundo plano **sin bloquear** las escrituras ni lecturas de la tabla *(disponible a partir de PostgreSQL 12)*:
+
+```sql
+REINDEX INDEX CONCURRENTLY nombre_del_indice;
+
+```
