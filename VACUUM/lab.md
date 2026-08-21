@@ -15,10 +15,7 @@ DROP TABLE IF EXISTS lab.demo_extreme_bloat CASCADE;
 DROP TABLE IF EXISTS lab.demo_heavy_updates CASCADE;
 DROP TABLE IF EXISTS lab.demo_vip_facturas CASCADE;
 DROP TABLE IF EXISTS lab.demo_escudo_historial CASCADE;
-TRUNCATE TABLE lab.maintenance_filters RESTART IDENTITY CASCADE;
-TRUNCATE TABLE maint.vacuum_full_triage RESTART IDENTITY CASCADE;
-TRUNCATE TABLE maint.vacuum_tasks RESTART IDENTITY CASCADE;
-TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE;
+
 
 -- 2. Creación de Topología de Tablas
 CREATE TABLE lab.demo_extreme_bloat (id SERIAL, payload TEXT, status VARCHAR(20));
