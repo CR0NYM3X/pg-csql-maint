@@ -242,6 +242,6 @@ END;
 $$;
 
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_vacuum FROM PUBLIC;
-REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
+
 
 COMMIT;
