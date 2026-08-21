@@ -83,27 +83,30 @@ COMMENT ON COLUMN maint.vacuum_tasks.error_log IS 'Texto descriptivo del error n
 -- =========================================================================================
 -- 3. TABLA DE CONTROL: Reglas y Filtros de Seguridad (Blacklist / Whitelist)
 -- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.filters (
+-- DROP TABLE IF EXISTS maint.filters CASCADE;
+CREATE TABLE maint.filters (
     filter_id SERIAL PRIMARY KEY,                              
     schema_name VARCHAR(255) NOT NULL,                         
-    table_name VARCHAR(255) NOT NULL,                          
+    table_name VARCHAR(255) NOT NULL,
+    
+    -- [CORRECCIÓN DIAMANTE] Columna con integridad de dominio estricta
+    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL',                         
     is_ignored BOOLEAN NOT NULL DEFAULT FALSE,                 
     force_maintenance BOOLEAN NOT NULL DEFAULT FALSE,          
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), 
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), 
     updated_by VARCHAR(100) DEFAULT current_user,              
-    CONSTRAINT uq_maintenance_filters_schema_table UNIQUE (schema_name, table_name)
+    
+    -- REGLA 1: Evitar duplicidad de la misma acción para la misma tabla
+    CONSTRAINT uq_maintenance_filters_schema_table_action UNIQUE (schema_name, table_name, maintenance_action),
+    
+    -- REGLA 2: [NUEVO] El candado del Gatekeeper. Solo admite estos 5 valores exactos.
+    CONSTRAINT chk_valid_maintenance_action CHECK (
+        maintenance_action IN ('ALL', 'VACUUM', 'VACUUM_FULL', 'ANALYZE', 'REINDEX')
+    )
 );
 
-COMMENT ON TABLE maint.filters IS 'Panel de control de seguridad para exclusión obligatoria (Kill Switch) o priorización VIP de tablas.';
-COMMENT ON COLUMN maint.filters.filter_id IS 'Identificador único de la regla de filtrado de mantenimiento.';
-COMMENT ON COLUMN maint.filters.schema_name IS 'Nombre del esquema aplicable a la regla de filtrado.';
-COMMENT ON COLUMN maint.filters.table_name IS 'Nombre de la tabla aplicable a la regla de filtrado.';
-COMMENT ON COLUMN maint.filters.is_ignored IS 'Flag de exclusión total (Kill Switch). Si es TRUE, la tabla es inmune al orquestador.';
-COMMENT ON COLUMN maint.filters.force_maintenance IS 'Flag de priorización VIP. Si es TRUE, la tabla se incluye en el scope CUSTOM_LIST.';
-COMMENT ON COLUMN maint.filters.created_at IS 'Marca de tiempo del registro original del filtro en el sistema.';
-COMMENT ON COLUMN maint.filters.updated_at IS 'Marca de tiempo del último cambio aplicado a la regla de filtrado.';
-COMMENT ON COLUMN maint.filters.updated_by IS 'Nombre del usuario/rol de PostgreSQL que configuró o modificó la regla.';
+COMMENT ON CONSTRAINT chk_valid_maintenance_action ON maint.filters IS 'Candado de integridad: Previene errores tipográficos al registrar filtros de mantenimiento.';
 
 
 -- Índices Originales
@@ -139,20 +142,26 @@ BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
     
-    -- Inserción de la cabecera del Job
     INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
     VALUES (p_scope || '_' || p_profile, 'VACUUM', p_threshold_pct, p_parallel_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
     COMMIT;
 
     SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || p_profile) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
 
-    -- INSERCIÓN PURIFICADA: Solo RAM (pg_stat_all_tables), CERO cruces con pgstattuple
+    -- INSERCIÓN CON GRANULARIDAD DE FILTROS
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
            ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
     FROM pg_stat_all_tables st
     LEFT JOIN maint.vacuum_tasks prev_t ON prev_t.job_id = v_last_job_id AND prev_t.schema_name = st.schemaname AND prev_t.table_name = st.relname
-    LEFT JOIN maint.filters mf ON mf.schema_name = st.schemaname AND mf.table_name = st.relname
+    -- [PARCHE APLICADO] Resolución de conflictos jerárquicos (VACUUM mata a ALL)
+    LEFT JOIN LATERAL (
+        SELECT is_ignored, force_maintenance 
+        FROM maint.filters f 
+        WHERE f.schema_name = st.schemaname AND f.table_name = st.relname 
+          AND f.maintenance_action IN ('ALL', 'VACUUM')
+        ORDER BY CASE WHEN f.maintenance_action = 'VACUUM' THEN 1 ELSE 2 END ASC LIMIT 1
+    ) mf ON TRUE
     WHERE st.schemaname <> 'pg_toast' AND COALESCE(mf.is_ignored, FALSE) = FALSE
       AND (
           (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
@@ -161,7 +170,6 @@ BEGIN
           (p_scope = 'ALL_SYSTEM' AND st.schemaname IN ('pg_catalog', 'information_schema'))
       )
       AND (
-          -- Condición Estricta de VACUUM Normal (Sin banderas de VACUUM FULL)
           (p_scope LIKE 'SMART%' AND st.n_dead_tup >= p_min_dead_tup AND ( (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0) ) >= (p_threshold_pct / 100.0) OR st.n_dead_tup >= 100000)) OR
           (p_scope NOT LIKE 'SMART%')
       )
@@ -176,12 +184,7 @@ BEGIN
     END IF;
 
     LOOP
-        FOR r_finished IN (
-            SELECT task_id, child_pid, schema_name, table_name 
-            FROM maint.vacuum_tasks 
-            WHERE job_id = v_job_id AND status = 'RUNNING' 
-            AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')
-        ) LOOP
+        FOR r_finished IN (SELECT task_id, child_pid, schema_name, table_name FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'RUNNING' AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')) LOOP
             BEGIN
                 PERFORM * FROM public.pg_background_result(r_finished.child_pid) AS (result TEXT);
                 UPDATE maint.vacuum_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
@@ -195,8 +198,7 @@ BEGIN
         END LOOP;
 
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
-            UPDATE maint.vacuum_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time' WHERE job_id = v_job_id AND status = 'PENDING'; 
-            COMMIT;
+            UPDATE maint.vacuum_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time' WHERE job_id = v_job_id AND status = 'PENDING'; COMMIT;
         END IF;
 
         SELECT COUNT(*) INTO v_active_workers FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'RUNNING';
@@ -206,7 +208,6 @@ BEGIN
 
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
-
             SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
@@ -219,12 +220,10 @@ BEGIN
 
                 v_child_pid := public.pg_background_launch(v_raw_sql);
                 UPDATE maint.vacuum_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; COMMIT;
-
                 IF p_verbose THEN RAISE INFO '    [>] LANZANDO [%] PID % -> %.%', p_profile, v_child_pid, v_schema, v_table; END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
             END IF;
         END LOOP;
-        
         PERFORM pg_sleep(1);
     END LOOP;
 
@@ -234,12 +233,10 @@ BEGIN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     END IF;
     COMMIT;
-    
     IF p_verbose THEN RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks; END IF;
 END;
 $$;
 
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_vacuum FROM PUBLIC;
-
 
 COMMIT;
