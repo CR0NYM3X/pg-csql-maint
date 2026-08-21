@@ -67,8 +67,8 @@ ANALYZE lab.demo_escudo_historial;
 -- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
 -- ====================================================================================
 INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
-('public', 'demo_escudo_historial', TRUE, FALSE),  -- [ESCUDO ACTIVO]: Intocable.
-('public', 'demo_vip_facturas', FALSE, TRUE);      -- [PASE VIP]: Mantenimiento prioritario.
+('lab', 'demo_heavy_updates', TRUE, FALSE),  -- [ESCUDO ACTIVO]: Intocable.
+('lab', 'demo_extreme_bloat', FALSE, TRUE);      -- [PASE VIP]: Mantenimiento prioritario.
 
 ```
 
