@@ -85,11 +85,12 @@ Porque el diseño nativo del bloqueo `AccessExclusiveLock` es inaceptable para c
 
 
 
-**"Si mi tabla pesa 50 GB, ¿ocupo otros 50 GB de espacio libre? ¿Y qué pasa con el WAL?"**
+
 
 
 ###  1. EL MITO DEL ESPACIO (¿Necesito 50 GB de disco?)
 
+**"Si mi tabla pesa 50 GB, ¿ocupo otros 50 GB de espacio libre? ¿Y qué pasa con el WAL?"**
 
 La respuesta corta es: **NO necesitas 50 GB. Necesitas el espacio equivalente a tus DATOS VIVOS más tus ÍNDICES.**
 
