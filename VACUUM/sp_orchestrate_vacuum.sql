@@ -133,27 +133,26 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id INT; v_task_id INT; v_schema TEXT; v_table TEXT; v_child_pid INT;
     v_active_workers INT; v_pending_tasks INT; v_total_tasks INT; v_raw_sql TEXT;
-    v_effective_workers INT := p_parallel_workers; r_finished RECORD; v_last_job_id INT;
+    r_finished RECORD; v_last_job_id INT;
     v_success_count INT := 0; 
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
     
-    IF p_profile IN ('VACUUM_FULL', 'SMART_VACUUM_FULL') THEN v_effective_workers := 1; END IF;
-
+    -- Inserción de la cabecera del Job
     INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
-    VALUES (p_scope || '_' || p_profile, 'VACUUM', p_threshold_pct, v_effective_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
+    VALUES (p_scope || '_' || p_profile, 'VACUUM', p_threshold_pct, p_parallel_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
     COMMIT;
 
     SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || p_profile) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
 
-    -- INSERCIÓN CON COALESCE 0.00 CORREGIDO Y LEEYENDO MAINT.PGSTATTUPLE
+    -- INSERCIÓN PURIFICADA: Solo RAM (pg_stat_all_tables), CERO cruces con pgstattuple
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
-    SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, ROUND(COALESCE(vft.deep_free_percent, vft.approx_free_percent, (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
+    SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
+           ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
     FROM pg_stat_all_tables st
     LEFT JOIN maint.vacuum_tasks prev_t ON prev_t.job_id = v_last_job_id AND prev_t.schema_name = st.schemaname AND prev_t.table_name = st.relname
     LEFT JOIN maint.filters mf ON mf.schema_name = st.schemaname AND mf.table_name = st.relname
-    LEFT JOIN maint.pgstattuple vft ON vft.schema_name = st.schemaname AND vft.table_name = st.relname AND vft.evaluation_week = date_trunc('week', current_date)::DATE
     WHERE st.schemaname <> 'pg_toast' AND COALESCE(mf.is_ignored, FALSE) = FALSE
       AND (
           (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
@@ -162,12 +161,11 @@ BEGIN
           (p_scope = 'ALL_SYSTEM' AND st.schemaname IN ('pg_catalog', 'information_schema'))
       )
       AND (
-          -- V3: EL ORQUESTADOR SOLO LEE EL FLAG UNIFICADO
-          (p_profile = 'SMART_VACUUM_FULL' AND vft.requiere_vf = TRUE) OR
-          (p_profile <> 'SMART_VACUUM_FULL' AND p_scope LIKE 'SMART%' AND st.n_dead_tup >= p_min_dead_tup AND ( (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0) ) >= (p_threshold_pct / 100.0) OR st.n_dead_tup >= 100000)) OR
-          (p_profile <> 'SMART_VACUUM_FULL' AND p_scope NOT LIKE 'SMART%')
+          -- Condición Estricta de VACUUM Normal (Sin banderas de VACUUM FULL)
+          (p_scope LIKE 'SMART%' AND st.n_dead_tup >= p_min_dead_tup AND ( (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0) ) >= (p_threshold_pct / 100.0) OR st.n_dead_tup >= 100000)) OR
+          (p_scope NOT LIKE 'SMART%')
       )
-    ORDER BY CASE WHEN prev_t.status = 'SKIPPED_TIME_LIMIT' THEN 0 ELSE 1 END ASC, CASE WHEN p_profile = 'SMART_VACUUM_FULL' THEN COALESCE(vft.deep_free_percent, vft.approx_free_percent, 0) ELSE 0 END DESC, COALESCE(st.last_vacuum, '1970-01-01'::timestamptz) ASC, st.n_dead_tup DESC;
+    ORDER BY CASE WHEN prev_t.status = 'SKIPPED_TIME_LIMIT' THEN 0 ELSE 1 END ASC, COALESCE(st.last_vacuum, '1970-01-01'::timestamptz) ASC, st.n_dead_tup DESC;
     COMMIT;
 
     SELECT COUNT(*) INTO v_total_tasks FROM maint.vacuum_tasks WHERE job_id = v_job_id;
@@ -206,7 +204,7 @@ BEGIN
         
         IF v_active_workers = 0 AND v_pending_tasks = 0 THEN EXIT; END IF;
 
-        WHILE v_active_workers < v_effective_workers AND v_pending_tasks > 0 LOOP
+        WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
             SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY task_id ASC LIMIT 1;
@@ -217,7 +215,7 @@ BEGIN
                 IF p_profile = 'LIGHT' THEN v_raw_sql := format('VACUUM (SKIP_LOCKED ON, INDEX_CLEANUP OFF) %I.%I;', v_schema, v_table);
                 ELSIF p_profile = 'BALANCED' THEN v_raw_sql := format('VACUUM (INDEX_CLEANUP AUTO) %I.%I;', v_schema, v_table);
                 ELSIF p_profile = 'AGGRESSIVE' THEN v_raw_sql := format('VACUUM (INDEX_CLEANUP AUTO, PARALLEL 4, ANALYZE) %I.%I;', v_schema, v_table);
-                ELSIF p_profile IN ('VACUUM_FULL', 'SMART_VACUUM_FULL') THEN v_raw_sql := format('VACUUM FULL %I.%I;', v_schema, v_table); END IF;
+                END IF;
 
                 v_child_pid := public.pg_background_launch(v_raw_sql);
                 UPDATE maint.vacuum_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; COMMIT;
