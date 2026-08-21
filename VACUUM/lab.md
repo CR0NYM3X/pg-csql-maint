@@ -73,34 +73,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 ```
 
 ---
-
-### 🔬 FASE 2: LA DEMOSTRACIÓN MAGISTRAL (Paso a Paso)
-
-Aquí empieza tu presentación. Ejecuta cada bloque y léele al cliente la explicación.
-
-#### Escenario 1: El Radar Predictivo (El Triage)
-
-> **Discurso para el cliente:** *"En una base de datos de misión crítica, no lanzamos un `VACUUM FULL` a ciegas porque bloquea la operación. Primero, lanzamos nuestro Escáner Forense Dominical. Este radar lee los mapas de espacio libre del disco duro. Solo si descubre que el espacio hueco justifica el bloqueo, marcará la tabla para cirugía."*
-
-```sql
-CALL maint.sp_populate_vacuum_triage(
-    p_scope => 'ALL_USER', 
-    p_free_pct_threshold => 10.00, -- Si tiene >10% de espacio libre, gatilla Fase 2
-    p_dead_pct_threshold => 20.00, 
-    p_min_table_mb => 0.00, 
-    p_verbose => TRUE
-);
-
--- Demuestra el resultado:
-SELECT table_name, approx_table_len, approx_free_percent, deep_scanned, deep_free_percent 
-FROM maint.vacuum_full_triage
-ORDER BY deep_free_percent DESC NULLS LAST;
-
-```
-
-*(Verás que `demo_extreme_bloat` fue escaneada profundamente y registra un brutal ~90% de espacio libre real recuperable).*
-
----
+ 
 
 #### Escenario 2: Mantenimiento Diario Inteligente
 
@@ -115,30 +88,27 @@ CALL maint.sp_orchestrate_vacuum(
     p_verbose => TRUE
 );
 
+---- Mantenimiento a todas las tablas Forzado
+CALL maint.sp_orchestrate_vacuum(
+    p_scope            => 'ALL_USER', --- ALL_USER, SMART_USER, CUSTOM_LIST , SMART_SYSTEM_USER , ALL_SYSTEM_USER, ALL_SYSTEM
+    p_profile          => 'BALANCED',
+    p_parallel_workers => 16,
+    p_cutoff_time      => NULL, -- puedes colocar la hora 
+    p_verbose          => TRUE,
+    p_threshold_pct    => 0,
+    p_min_dead_tup     => 0
+);
+
+
+
+
 -- Demuestra que el escudo funcionó:
 SELECT table_name, status, error_log FROM maint.vacuum_tasks WHERE job_id = (SELECT MAX(job_id) FROM maint.jobs);
 
 ```
 
 ---
-
-#### Escenario 3: La Cirugía Física (VACUUM FULL Basado en Datos)
-
-> **Discurso para el cliente:** *"Ahora lanzamos el perfil `SMART_VACUUM_FULL`. El orquestador consultará la telemetría del Triage. Observen cómo ignora todas las tablas menores y se va directo como un francotirador a `demo_extreme_bloat`, porque sabe con certeza matemática que recuperará megabytes de espacio en disco."*
-
-```sql
-CALL maint.sp_orchestrate_vacuum(
-    p_scope => 'SMART_USER',
-    p_profile => 'SMART_VACUUM_FULL',
-    p_threshold_pct => 0.20, -- Solo tablas con >20% de fragmentación libre
-    p_verbose => TRUE
-);
-
-```
-
-*(Aclaración técnica de Pedro: En este caso, como `VACUUM FULL` desde `pg_background` marca el error "cannot be executed from a function", el orquestador atrapará el error elegantemente. Esto es perfecto para el siguiente paso).*
-
----
+ 
 
 #### Escenario 4: Auditoría Forense y Contención de Desastres
 
