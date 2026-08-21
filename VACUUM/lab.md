@@ -7,7 +7,7 @@ Ejecuta este bloque para destruir el entorno anterior y crear un volumen de dato
 -- ====================================================================================
 -- DBA SQUAD: VANGUARD BLACK-OPS | SIMULADOR DE ESTRÉS TRANSACCIONAL
 -- ====================================================================================
-
+-- drop schema lab cascade;
 create schema IF NOT EXISTS lab;
 
 -- 1. Limpieza Total del Entorno
@@ -23,6 +23,11 @@ CREATE TABLE lab.demo_heavy_updates (id SERIAL, balance NUMERIC, last_tx TIMESTA
 CREATE TABLE lab.demo_vip_facturas (id SERIAL, monto NUMERIC, cliente TEXT);
 CREATE TABLE lab.demo_escudo_historial (id SERIAL, log_data TEXT);
 
+ALTER TABLE lab.demo_extreme_bloat SET (autovacuum_enabled = false);
+ALTER TABLE lab.demo_heavy_updates SET (autovacuum_enabled = false);
+ALTER TABLE lab.demo_vip_facturas SET (autovacuum_enabled = false);
+ALTER TABLE lab.demo_escudo_historial SET (autovacuum_enabled = false);
+
 -- ====================================================================================
 -- 3. INYECCIÓN MASIVA DE TRÁFICO (SIMULACIÓN DE 6 MESES DE PRODUCCIÓN)
 -- ====================================================================================
@@ -34,8 +39,8 @@ INSERT INTO lab.demo_extreme_bloat(payload, status)
 SELECT md5(g::text), 'PROCESADO' FROM generate_series(1, 500000) g;
 
 DELETE FROM lab.demo_extreme_bloat WHERE id % 10 != 0; -- Borra 450,000 filas
-VACUUM lab.demo_extreme_bloat; -- Convierte las tuplas muertas en Espacio Libre Físico
-ANALYZE lab.demo_extreme_bloat;
+-- VACUUM lab.demo_extreme_bloat; -- Convierte las tuplas muertas en Espacio Libre Físico
+-- ANALYZE lab.demo_extreme_bloat;
 
 -- [CASO B] TABLA DE ALTA TRANSACCIONALIDAD: Objetivo -> Mantenimiento AGGRESSIVE
 -- Insertamos 200,000 filas y las actualizamos para generar tuplas muertas masivas.
@@ -61,7 +66,7 @@ ANALYZE lab.demo_escudo_historial;
 -- ====================================================================================
 -- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
 -- ====================================================================================
-INSERT INTO lab.maintenance_filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
+INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
 ('public', 'demo_escudo_historial', TRUE, FALSE),  -- [ESCUDO ACTIVO]: Intocable.
 ('public', 'demo_vip_facturas', FALSE, TRUE);      -- [PASE VIP]: Mantenimiento prioritario.
 
