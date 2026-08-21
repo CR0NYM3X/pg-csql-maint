@@ -109,6 +109,37 @@ CREATE TABLE maint.filters (
 COMMENT ON CONSTRAINT chk_valid_maintenance_action ON maint.filters IS 'Candado de integridad: Previene errores tipográficos al registrar filtros de mantenimiento.';
 
 
+
+CREATE TABLE maint.vacuum_profiles (
+    profile_name VARCHAR(50) PRIMARY KEY, -- Ej: 'LIGHT', 'BALANCED', 'FREEZE_HEAVY'
+    description TEXT,
+    
+    -- Parámetros Nativos de VACUUM (Fuertemente Tipados = Cero SQLi)
+    is_analyze BOOLEAN DEFAULT FALSE,
+    is_freeze BOOLEAN DEFAULT FALSE,
+    skip_locked BOOLEAN DEFAULT TRUE,
+    is_verbose BOOLEAN DEFAULT FALSE,
+    index_cleanup VARCHAR(10) DEFAULT 'AUTO', -- Solo admitirá AUTO, ON, OFF
+    truncate_pages BOOLEAN DEFAULT TRUE,
+    parallel_workers INT DEFAULT 0, -- 0 significa sin PARALLEL
+    
+    -- Candados de Seguridad y Auditoría
+    created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
+    updated_by VARCHAR(100) DEFAULT current_user,
+    
+    CONSTRAINT chk_index_cleanup CHECK (index_cleanup IN ('AUTO', 'ON', 'OFF')),
+    CONSTRAINT chk_parallel_limit CHECK (parallel_workers BETWEEN 0 AND 32)
+);
+
+-- Inserción de los Perfiles Base del Escuadrón:
+-- Inserción de los Perfiles Base del Escuadrón
+INSERT INTO maint.vacuum_profiles (profile_name, description, skip_locked, index_cleanup, is_analyze, parallel_workers) VALUES 
+('LIGHT', 'Perfil inofensivo. Salta bloqueos y no limpia índices.', TRUE, 'OFF', FALSE, 0),
+('BALANCED', 'Perfil estándar. Limpia índices automáticamente.', FALSE, 'AUTO', FALSE, 0),
+('AGGRESSIVE', 'Perfil profundo. Fuerza hilos paralelos y actualiza estadísticas.', FALSE, 'AUTO', TRUE, 4);
+
+
+
 -- Índices Originales
 CREATE INDEX IF NOT EXISTS idx_maint_jobs_type_action_id 
 ON maint.jobs (job_type, maintenance_action, job_id DESC);
@@ -135,26 +166,35 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id INT; v_task_id INT; v_schema TEXT; v_table TEXT; v_child_pid INT;
-    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT; v_raw_sql TEXT;
+    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT; 
+    v_raw_sql TEXT; v_options_str TEXT;
     r_finished RECORD; v_last_job_id INT;
     v_success_count INT := 0; 
+    
+    -- Variables para leer la configuración del perfil
+    r_profile RECORD;
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
+
+    -- [NUEVO] VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
+    SELECT * INTO r_profile FROM maint.vacuum_profiles WHERE UPPER(profile_name) = UPPER(p_profile);
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'CRÍTICO: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
+    END IF;
     
     INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
-    VALUES (p_scope || '_' || p_profile, 'VACUUM', p_threshold_pct, p_parallel_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
+    VALUES (p_scope || '_' || UPPER(p_profile), 'VACUUM', p_threshold_pct, p_parallel_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
     COMMIT;
 
-    SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || p_profile) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
+    SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || UPPER(p_profile)) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
 
-    -- INSERCIÓN CON GRANULARIDAD DE FILTROS
+    -- Triage de Tareas (Lógica V3 inalterada)
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
            ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
     FROM pg_stat_all_tables st
     LEFT JOIN maint.vacuum_tasks prev_t ON prev_t.job_id = v_last_job_id AND prev_t.schema_name = st.schemaname AND prev_t.table_name = st.relname
-    -- [PARCHE APLICADO] Resolución de conflictos jerárquicos (VACUUM mata a ALL)
     LEFT JOIN LATERAL (
         SELECT is_ignored, force_maintenance 
         FROM maint.filters f 
@@ -182,6 +222,23 @@ BEGIN
         IF p_verbose THEN RAISE INFO '[!] No hay tablas candidatas que cumplan los filtros actuales.'; END IF;
         COMMIT; RETURN;
     END IF;
+
+    -- =====================================================================
+    -- [NUEVO] ENSAMBLADOR SEGURO DE LA SINTAXIS VACUUM (Zero SQLi)
+    -- =====================================================================
+    v_options_str := '';
+    IF r_profile.skip_locked THEN v_options_str := v_options_str || 'SKIP_LOCKED ON, '; END IF;
+    IF r_profile.is_analyze THEN v_options_str := v_options_str || 'ANALYZE ON, '; END IF;
+    IF r_profile.is_freeze THEN v_options_str := v_options_str || 'FREEZE ON, '; END IF;
+    IF r_profile.is_verbose THEN v_options_str := v_options_str || 'VERBOSE ON, '; END IF;
+    IF NOT r_profile.truncate_pages THEN v_options_str := v_options_str || 'TRUNCATE OFF, '; END IF;
+    
+    v_options_str := v_options_str || 'INDEX_CLEANUP ' || r_profile.index_cleanup;
+    
+    IF r_profile.parallel_workers > 0 THEN 
+        v_options_str := v_options_str || ', PARALLEL ' || r_profile.parallel_workers; 
+    END IF;
+    -- =====================================================================
 
     LOOP
         FOR r_finished IN (SELECT task_id, child_pid, schema_name, table_name FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'RUNNING' AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')) LOOP
@@ -213,14 +270,13 @@ BEGIN
             IF v_task_id IS NOT NULL THEN
                 UPDATE maint.vacuum_tasks SET status = 'RUNNING', started_at = clock_timestamp() WHERE task_id = v_task_id; COMMIT;
 
-                IF p_profile = 'LIGHT' THEN v_raw_sql := format('VACUUM (SKIP_LOCKED ON, INDEX_CLEANUP OFF) %I.%I;', v_schema, v_table);
-                ELSIF p_profile = 'BALANCED' THEN v_raw_sql := format('VACUUM (INDEX_CLEANUP AUTO) %I.%I;', v_schema, v_table);
-                ELSIF p_profile = 'AGGRESSIVE' THEN v_raw_sql := format('VACUUM (INDEX_CLEANUP AUTO, PARALLEL 4, ANALYZE) %I.%I;', v_schema, v_table);
-                END IF;
+                -- [NUEVO] Inyección segura de las opciones dinámicas generadas
+                v_raw_sql := format('VACUUM (%s) %I.%I;', v_options_str, v_schema, v_table);
 
                 v_child_pid := public.pg_background_launch(v_raw_sql);
                 UPDATE maint.vacuum_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; COMMIT;
-                IF p_verbose THEN RAISE INFO '    [>] LANZANDO [%] PID % -> %.%', p_profile, v_child_pid, v_schema, v_table; END IF;
+                
+                IF p_verbose THEN RAISE INFO '    [>] LANZANDO [%] PID % -> %.%', UPPER(p_profile), v_child_pid, v_schema, v_table; END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
             END IF;
         END LOOP;
