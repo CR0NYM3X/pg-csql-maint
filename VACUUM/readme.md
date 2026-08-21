@@ -50,8 +50,6 @@ Define el comando SQL exacto que se inyectará asíncronamente a los *workers* y
 | **`'LIGHT'`** | `VACUUM (SKIP_LOCKED ON, INDEX_CLEANUP OFF) schema.table;` | **No bloqueante:** Salta tablas bloqueadas y omite limpieza de índices. Ideal para horas pico. |
 | **`'BALANCED'`** *(Default)* | `VACUUM (INDEX_CLEANUP AUTO) schema.table;` | **Mantenimiento estándar:** Limpieza equilibrada de tuplas e índices sin saturar I/O. |
 | **`'AGGRESSIVE'`** | `VACUUM (INDEX_CLEANUP AUTO, PARALLEL 4, ANALYZE) schema.table;` | **Mantenimiento profundo:** Usa 4 hilos paralelos por tabla y actualiza estadísticas (`ANALYZE`). |
-| **`'VACUUM_FULL'`** | `VACUUM FULL schema.table;` | **Reestructuración física:** Forzado a `parallel_workers = 1`. Reagrupa espacio en disco reteniendo bloqueo exclusivo (`AccessExclusiveLock`). |
-| **`'SMART_VACUUM_FULL'`** | `VACUUM FULL schema.table;` | **Full Basado en Telemetría:** Solo se ejecuta sobre tablas que en el triage previa (`vacuum_full_triage`) registraron un espacio libre profundo (`deep_free_percent`) mayor o igual al umbral especificado. Forzado a `parallel_workers = 1`. |
 
 
 ---
