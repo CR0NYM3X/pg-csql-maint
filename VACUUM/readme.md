@@ -1,192 +1,149 @@
- 
+
 
 # 🛡️ pg-csql-vacuum
 
- 
+**pg-csql-vacuum** es un orquestador de mantenimiento asíncrono y predictivo para bases de datos transaccionales masivas en PostgreSQL. Su objetivo es automatizar la limpieza de *bloat* (basura transaccional) y la actualización de estadísticas sin intervención humana.
 
-**pg-csql-vacuum** es un orquestador de mantenimiento asíncrono y predictivo para bases de datos transaccionales masivas. Diseñado para automatizar la limpieza de *bloat* (basura), refrescar estadísticas y ejecutar reestructuraciones físicas quirúrgicas.
-
-## 🥊 Cuadro Comparativo: ¿Por qué usar pg-csql-vacuum?
-
-La industria suele apoyarse en herramientas externas para combatir la fragmentación, pero exigen modificar tu esquema o compilar binarios de terceros. Así nos comparamos con los líderes del mercado:
-
-| Característica / Herramienta | `pg-csql-vacuum` 🛡️ | `pg_repack` 📦 | `pg_squeeze` 🗜️ |
-| --- | --- | --- | --- |
-| **Requiere Primary Key (PK)** | **NO** (Trabaja con cualquier esquema) | SÍ (Falla si la tabla no tiene PK/UK) | SÍ (Dependencia de PK o REPLICA IDENTITY) |
-| **Dependencia de Binarios** | **NO** (Usa extensiones nativas `pg_background`, `pgstattuple`) | SÍ (Requiere compilar en el SO Linux) | SÍ (Requiere binarios externos y decoding) |
-| **Nivel de Bloqueo** | **AccessExclusiveLock** (Solo en modo FULL) | AccessExclusiveLock (Breve al final) | AccessExclusiveLock (Breve al final) |
-| **Triage Predictivo** | **SÍ** (Calcula matemáticamente si vale la pena) | NO (Repaca a ciegas lo que le pidas) | NO (Depende de triggers o peticiones manuales) |
-| **Orquestador Asíncrono** | **SÍ** (Auto-gestionado, multi-hilo en Postgres) | NO (Requiere scripts Bash externos) | NO (Ejecución dependiente del cliente) |
-| **Caso de Uso Ideal** | **Ventanas de mantenimiento (Noches/Fines de semana)** | Bases de datos 24/7 sin ventanas | Bases de datos 24/7 sin ventanas |
-
-### 💡 Hablemos claro: La Ventaja y la Desventaja
-
-**La Desventaja (Seamos honestos):** A diferencia de `pg_repack`, nuestra reconstrucción física profunda (`VACUUM FULL`) **bloquea la tabla exclusiva y temporalmente**. No puedes escribir ni leer mientras se reconstruye.
-**La Ventaja (El Valor Real):** No te obligamos a alterar tu modelo de datos agregando Primary Keys a tablas *legacy*, ni corres riesgos compilando código C externo en tus servidores. Además, **no bloqueamos a lo loco**: gracias a nuestro Triage, la herramienta solo ejecuta el bloqueo exclusivo si demuestra matemáticamente que vas a recuperar Gigabytes de espacio. Es la herramienta perfecta para organizaciones que sí cuentan con **ventanas de mantenimiento nocturnas o de fin de semana** y buscan una automatización a prueba de fallos.
-
----
- 
-### 🎯 1. Ámbitos de Cobertura (`p_scope`)
-
-Controla qué tablas del catálogo serán evaluadas para entrar en la cola de trabajo:
-
-| Valor de `p_scope` | Descripción y Alcance |
-| --- | --- |
-| **`'SMART_USER'`** *(Default)* | **Esquemas de Usuario:** Aplica filtros inteligentes de *bloat* (tuplas muertas/porcentaje) ignorando catálogos del sistema (`pg_catalog`, `information_schema`). |
-| **`'ALL_USER'`** | **Esquemas de Usuario (Forzado):** Selecciona todas las tablas de usuario sin importar si cumplen o no los umbrales de tuplas muertas (útil para mantenimientos globales programados). |
-| **`'CUSTOM_LIST'`** | **Lista VIP Exclusiva:** Solo procesa las tablas que tengan el indicador `force_maintenance = TRUE` en la tabla de control `public.maintenance_filters`. |
-| **`'SMART_SYSTEM_USER'`** | **Usuario + Sistema (Inteligente):** Incluye tanto tablas de usuario como catálogos del sistema bajo filtros de umbral de tuplas muertas. |
-| **`'ALL_SYSTEM_USER'`** | **Usuario + Sistema (Todos):** Incluye absolutamente todas las tablas de usuario y del sistema sin filtrar por volumen de basura. |
-| **`'ALL_SYSTEM'`** | **Solo Catálogos del Sistema:** Limita la ejecución exclusivamente a los esquemas de sistema (`pg_catalog` e `information_schema`). |
+> ⚠️ **ACLARACIÓN CRÍTICA DE SEGURIDAD:**
+> Esta herramienta está diseñada **estrictamente para mantenimiento en caliente (Non-Blocking)** mediante `VACUUM` y `ANALYZE`. **NO SIRVE ni ejecuta `VACUUM FULL**`. Esta herramienta jamás aplicará un *AccessExclusiveLock* que detenga tu operación, garantizando que tu aplicación pueda seguir leyendo y escribiendo datos mientras la limpieza ocurre en segundo plano.
 
 ---
 
-### ⚙️ 2. Perfiles de Mantenimiento (`p_profile`)
+## 🏛️ El Cuarto de Control (Arquitectura de Tablas)
 
-Define el comando SQL exacto que se inyectará asíncronamente a los *workers* y el nivel de concurrencia asignado:
+El orquestador no opera a ciegas; está gobernado por 4 tablas maestras que actúan como su memoria y panel de seguridad. Para entender y operar la herramienta, debes conocer estas tablas:
 
-| Valor de `p_profile` | Sintaxis SQL Generada | Comportamiento y Uso |
+### 1. `maint.jobs` (La Cabecera Global)
+
+Cada vez que lanzas el orquestador, se crea un registro aquí. Almacena el identificador global del ciclo de trabajo, cuántos hilos paralelos se usaron, la hora de inicio/fin y el estado general (`RUNNING`, `COMPLETED`). Es tu vista de "alto nivel" para auditoría operativa.
+
+### 2. `maint.vacuum_tasks` (La Cola Transaccional)
+
+Es el campo de batalla. Por cada `Job`, el motor inserta aquí todas las tablas que necesitan limpieza. Rastrea el milisegundo exacto en que una tabla empezó a limpiarse, qué PID (hilo del sistema operativo) la procesó, y guarda el error nativo (`SQLERRM`) si algo falló.
+
+### 3. `maint.vacuum_profiles` (Seguridad Dinámica Anti-SQLi)
+
+Almacena los perfiles de ejecución dinámicos (Ej. `BALANCED`, `AGGRESSIVE`). En lugar de pasar parámetros de texto inseguros en tus consultas, el orquestador lee las configuraciones de esta tabla (`is_analyze`, `parallel_workers`) y ensambla el código internamente, erradicando cualquier riesgo de Inyección SQL.
+
+**Nota:** La herramienta ya viene con perfiles predefinidos (`LIGHT`, `BALANCED`, `AGGRESSIVE`), pero **puedes modificarlos o agregar tus propios perfiles personalizados** insertando nuevas filas en esta tabla.
+
+### 4. `maint.filters` (Panel de Granularidad y Excepciones)
+
+Funciona como Lista Negra y Lista VIP. Te permite bloquear o forzar mantenimientos a nivel de tabla con precisión quirúrgica.
+
+**Ejemplos prácticos de configuración de Filtros:**
+
+```sql
+-- RESTRICCIÓN (Lista Negra): Evitar que 'historico_logs' sea tocada por cualquier mantenimiento
+INSERT INTO maint.filters (schema_name, table_name, maintenance_action, is_ignored) 
+VALUES ('public', 'historico_logs', 'ALL', TRUE);
+
+-- FORZADO VIP (Lista Blanca): Obligar a limpiar 'usuarios' (Para usar con p_scope = 'CUSTOM_LIST')
+INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
+VALUES ('public', 'usuarios', 'VACUUM', TRUE);
+
+```
+
+---
+
+## 🎛️ Parámetros Principales de Ejecución
+
+Cuando llamas al orquestador, debes definir su alcance y su agresividad.
+
+### 🎯 Ámbitos de Cobertura (`p_scope`) y Dependencia de Umbrales
+
+Controla qué universo de tablas entra a la cola de evaluación. **Nota Táctica:** Los parámetros de control de basura (`p_threshold_pct` y `p_min_dead_tup`) solo son respetados por los alcances inteligentes (`SMART`).
+
+| Valor | Descripción | ¿Evalúa Umbrales de Basura? |
 | --- | --- | --- |
-| **`'LIGHT'`** | `VACUUM (SKIP_LOCKED ON, INDEX_CLEANUP OFF) schema.table;` | **No bloqueante:** Salta tablas bloqueadas y omite limpieza de índices. Ideal para horas pico. |
-| **`'BALANCED'`** *(Default)* | `VACUUM (INDEX_CLEANUP AUTO) schema.table;` | **Mantenimiento estándar:** Limpieza equilibrada de tuplas e índices sin saturar I/O. |
-| **`'AGGRESSIVE'`** | `VACUUM (INDEX_CLEANUP AUTO, PARALLEL 4, ANALYZE) schema.table;` | **Mantenimiento profundo:** Usa 4 hilos paralelos por tabla y actualiza estadísticas (`ANALYZE`). |
+| **`SMART_USER`** *(Default)* | Limpia esquemas de usuario. Solo procesa tablas que crucen los umbrales de fragmentación. | ✅ **SÍ** (Filtra por % y tuplas muertas) |
+| **`ALL_USER`** | Limpia todas las tablas de usuario, ignorando si están muy sucias o poco sucias. | ❌ **NO** (Ejecución forzada masiva) |
+| **`CUSTOM_LIST`** | Solo procesa las tablas marcadas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** (Depende de la Lista VIP) |
+| **`SMART_SYSTEM_USER`** | Igual que `SMART_USER`, pero también evalúa catálogos internos de PostgreSQL. | ✅ **SÍ** (Filtra por % y tuplas muertas) |
+| **`ALL_SYSTEM_USER`** | Limpia todas las tablas de usuario y catálogos de sistema sin discriminar por tamaño de basura. | ❌ **NO** (Ejecución forzada masiva) |
+| **`ALL_SYSTEM`** | Limita la ejecución exclusivamente a los catálogos del motor (`pg_catalog`, `information_schema`). | ❌ **NO** (Ejecución forzada masiva) |
 
+### ⚙️ Perfiles de Mantenimiento (`p_profile`)
+
+*Estos perfiles predefinidos residen en `maint.vacuum_profiles`. Puedes alterarlos o crear los tuyos.*
+
+| Valor Predeterminado | Comportamiento |
+| --- | --- |
+| **`LIGHT`** | Inofensivo. Salta tablas que estén bloqueadas y no limpia índices (Ideal para picos diurnos). |
+| **`BALANCED`** *(Default)* | Limpia tuplas e índices automáticamente. Balance perfecto de I/O. |
+| **`AGGRESSIVE`** | Inyecta hilos paralelos (`PARALLEL 4`) y refresca estadísticas (`ANALYZE`). |
 
 ---
 
+## 🚀 Guía de Ejecución Rápida (Deploy & Forget)
 
-## 💻 Ejemplos de Uso Recomendados
+La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu consola SSH. Utiliza uno de estos dos métodos, considerando tu infraestructura.
 
-### Escenario 1: Mantenimiento Diario de Rutina (Sin impacto operativo)
+### MÉTODO 1: Automatización Absoluta Nocturna (Vía `pg_cron`) 🌙
 
-Ideal para ejecutarse todas las noches. Limpia tuplas muertas sin bloquear tablas y usa pocos recursos para no afectar transacciones nocturnas.
+**Compatibilidad:** Soportado en IaaS, On-Premise y Cloud Gestionado (AWS RDS, Aurora, GCP Cloud SQL).
+**Recomendación:** Madrugadas (Ej. 02:00 AM) de Lunes a Domingo. Si el mantenimiento se alarga, `p_cutoff_time` abortará las colas limpiamente para no afectar el horario laboral.
 
 ```sql
--- Mantenimiento ligero/balanceado diario sobre tablas de usuario
-CALL public.sp_orchestrate_vacuum(
-    p_scope => 'SMART_USER',
-    p_profile => 'BALANCED',
-    p_parallel_workers => 2,
-    p_threshold_pct => 0.05
-);
+-- Programa el Barrendero Diario a las 02:00 AM.
+SELECT cron.schedule_in_database('vanguard_daily_vacuum', '0 2 * * *', 
+$$ 
+  CALL maint.sp_orchestrate_vacuum(
+      p_scope            => 'SMART_USER',    -- Evalúa solo esquemas de usuario
+      p_profile          => 'BALANCED',      -- Limpieza de índices automática (Lee maint.vacuum_profiles)
+      p_parallel_workers => 4,               -- Limpia hasta 4 tablas en simultáneo
+      p_cutoff_time      => '05:30:00'::TIME,-- [KILL SWITCH] Aborta cola si dan las 5:30 AM
+      p_verbose          => FALSE,           -- Silencioso (Ideal para ejecución en background/cron)
+      p_threshold_pct    => 5.00,            -- Umbral: Exige > 5% de basura para encolar la tabla
+      p_min_dead_tup     => 5000             -- Filtro: Ignora tablas con menos de 5,000 tuplas muertas
+  ); 
+$$, 
+'mi_base_de_datos', 'postgres', true);
 
 ```
 
----
+### MÉTODO 2: El Botón de Pánico Asíncrono Diurno (Vía `pg_background`) ⚡
 
-### Escenario 2: Ventana de Mantenimiento Crítica de Fin de Semana (Triage + Smart Vacuum Full)
+**Compatibilidad:** Soportado en Servidores Nativos (IaaS, EC2, On-Premise, Cloud SQL).
 
-Para ejecutar una reestructuración física profunda (`VACUUM FULL`) de forma segura en bases de datos de misión crítica (VLDBs), se debe seguir el flujo en 2 pasos dentro de la ventana de tiempo (ej. Sábados de 01:00 AM a 05:00 AM):
-
-```sql
--- =====================================================================
--- PASO 1: EL RECOLECTOR / RADAR (Se ejecuta 1-2 horas antes)
--- Escanea la base de datos y llena la tabla 'vacuum_full_triage'
--- =====================================================================
-CALL public.sp_populate_vacuum_triage(
-    p_scope => 'ALL_USER', 
-    p_free_pct_threshold => 15.00,  -- Marcará tablas con >15% de espacio libre interno
-    p_free_mb_threshold => 1024.00,  -- O con >1 GB de espacio libre absoluto
-    p_min_table_mb => 100.00,        -- Ignora tablas menores a 100 MB
-    p_verbose => TRUE
-);
-
--- =====================================================================
--- PASO 2: TUNING DINÁMICO DE FUERZA BRUTA (Solo dura esta sesión)
--- =====================================================================
-SET maintenance_work_mem = '4GB';           -- Asigna RAM masiva para acelerar índices
-SET vacuum_cost_delay = 0;                  -- Quita el freno de disco para máxima I/O
-SET max_parallel_maintenance_workers = 8;   -- Exprime los núcleos de CPU disponibles
-SET wal_compression = on;                   -- Comprime WALs para no asfixiar la red de las réplicas
-
--- =====================================================================
--- PASO 3: EL ORQUESTADOR SMART (Cirugía Física Inteligente)
--- Consume los datos recolectados en el Paso 1 para actuar quirúrgicamente
--- =====================================================================
-CALL public.sp_orchestrate_vacuum(
-    p_scope => 'SMART_USER',
-    p_profile => 'SMART_VACUUM_FULL', 
-    p_parallel_workers => 1,              -- Importante: 1 hilo para evitar contención de I/O en FULL
-    p_threshold_pct => 0.15,              -- Filtra tablas que tengan >= 15% en deep_free_percent
-    p_cutoff_time => '05:00:00'::TIME,    -- [KILL SWITCH] Aborta si la hora cruza las 05:00 AM
-    p_verbose => TRUE
-);
-
--- =====================================================================
--- PASO 4: LIMPIEZA DE SESIÓN (Opcional)
--- =====================================================================
-RESET maintenance_work_mem;
-RESET vacuum_cost_delay;
-
-```
-
----
-
-### Escenario 3: Mantenimiento VIP Relámpago (CUSTOM_LIST)
-
-Si necesitas ejecutar mantenimiento agresivo únicamente sobre una lista específica de tablas críticas durante una ventana corta de 15 minutos:
+**Recomendación:** Urgencias diurnas sobre tablas específicas sin congelar la consola del DBA.
 
 ```sql
--- 1. Marcar la tabla en el panel de seguridad (Pase VIP)
-UPDATE public.maintenance_filters 
-SET force_maintenance = TRUE 
-WHERE schema_name = 'public' AND table_name = 'facturas_mes_activo';
-
--- 2. Ejecutar el orquestador en modo CUSTOM_LIST
-CALL public.sp_orchestrate_vacuum(
-    p_scope => 'CUSTOM_LIST',
-    p_profile => 'AGGRESSIVE',
-    p_parallel_workers => 4,
-    p_verbose => TRUE
-);
-
-```
-
----
-
-
-
-#### 2. Modos Ejecuta y Suelta
-
-
-**MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
-```sql
+-- Lanza el proceso como un fantasma en el sistema operativo y te devuelve el control de la consola
 SELECT * FROM public.pg_background_launch(
     $$
       CALL maint.sp_orchestrate_vacuum(
-          p_scope            => 'ALL_USER',       -- Alcance: Esquemas de usuario. No aplica a esquemas del sistema ('pg_catalog') ni TOAST.
-          p_profile          => 'BALANCED',       -- Perfil diario sin bloqueos. Aplica para mantenimiento rutinario; no aplica para reescribir tablas en disco (usar 'SMART_VACUUM_FULL').
-          p_parallel_workers => 8,                -- 8 hilos en paralelo. Aplica en perfiles normales; inactivo en 'VACUUM_FULL' (el motor lo fuerza automáticamente a 1 hilo).
-          p_threshold_pct    => 0.05,             -- Umbral del 5% de basura. Aplica para encolar la tabla; no aplica en 'SMART_VACUUM_FULL' (ahí evalúa % de espacio libre en disco).
-          p_min_dead_tup     => 5000,             -- Mínimo 5,000 tuplas muertas. Aplica en modo 'SMART' para omitir tablas chicas; no aplica en alcances masivos no-SMART.
-          p_cutoff_time      => '05:55:00'::TIME, -- [KILL SWITCH]: Freno a las 05:55 AM. Aplica para no invadir el horario laboral; no aplica si se coloca en NULL (sin límite de tiempo).
-          p_verbose          => FALSE             -- Modo silencioso. Aplica en cronjobs de producción; usar TRUE solo para depuración manual en terminal.
+          p_scope            => 'CUSTOM_LIST', -- Solo procesa tablas VIP marcadas en maint.filters
+          p_profile          => 'AGGRESSIVE',  -- Inyecta hilos paralelos y actualiza estadísticas
+          p_parallel_workers => 8,             -- Máxima potencia de I/O para terminar rápido
+          p_cutoff_time      => NULL,          -- Sin límite de tiempo (Corre hasta vaciar la lista VIP)
+          p_verbose          => FALSE,         -- Mantiene el log del background limpio
+          p_threshold_pct    => 0.00,          -- [IGNORADO] CUSTOM_LIST no evalúa porcentajes
+          p_min_dead_tup     => 0              -- [IGNORADO] CUSTOM_LIST no evalúa volumen
       );
     $$
 );
 
-select * FROM public.pg_background_result(2102986)  AS (result TEXT);
+-- Obtendrás un PID en pantalla (Ej. 104598). Para revisar el log final, ejecuta:
+-- SELECT * FROM public.pg_background_result(104598) AS (result TEXT);
 ```
 
-**MÉTODO 2: LA AUTOMATIZACIÓN ABSOLUTA (Vía pg_cron)**
-```SQL
--- Programa el orquestador para que despierte todos los días a las 02:00 AM
-SELECT cron.schedule_in_database(
-    'vanguard_smart_analyze_daily', 
-    '0 2 * * *', 
-    $$ 
-    CALL maint.sp_orchestrate_analyze(
-        p_job_type         => 'SMART', 
-        p_parallel_workers => 4, 
-        p_verbose          => FALSE, 
-        p_threshold_pct    => 0.05, 
-        p_min_rows         => 1000,
-        p_cutoff_time      => '06:00:00'::TIME
-    ); 
-    $$,
-    'mi_base_de_datos', 
-    'postgres', 
-    true
-);
-```
 
+ 
+---
+ 
+## 🎛️ Diccionario de Parámetros: `maint.sp_orchestrate_vacuum`
+
+Cuando ejecutes el procedimiento almacenado (ya sea vía cron o manual), puedes ajustar su comportamiento utilizando estos parámetros. El diseño del escuadrón garantiza que, si omites alguno, el orquestador usará valores seguros por defecto.
+
+| Parámetro | Tipo | Default | Descripción y Uso Operativo |
+| --- | --- | --- | --- |
+| `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Define qué universo de tablas será evaluado. Valores permitidos: `'SMART_USER'`, `'ALL_USER'`, `'CUSTOM_LIST'`, `'SMART_SYSTEM_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`. |
+| `p_profile` | `VARCHAR` | `'BALANCED'` | **Nivel de Agresividad.** Lee la tabla `maint.vacuum_profiles` para inyectar configuraciones sin riesgo de inyección SQL. Ejemplos integrados: `'LIGHT'`, `'BALANCED'`, `'AGGRESSIVE'`. |
+| `p_parallel_workers` | `INT` | `4` | **Nivel de Concurrencia.** Define cuántas tablas se limpiarán de forma simultánea. *Advertencia: Úsalo con precaución; valores muy altos en bases de datos con discos lentos generarán cuellos de botella de I/O (Saturación de I/O Wait).* |
+| `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Fija una hora límite militar (Ej. `'06:00:00'`). Si un proceso termina y el reloj del sistema supera esta hora, el orquestador abortará la cola pendiente y se apagará para no invadir el horario laboral diurno. Si es `NULL`, correrá hasta vaciar la cola. |
+| `p_verbose` | `BOOLEAN` | `FALSE` | **Modo Depuración.** Si se ajusta a `TRUE`, el procedimiento imprimirá mensajes (`INFO`, `WARNING`) en tiempo real sobre qué tabla está procesando, el PID asignado y los fallos encontrados. *Dejar en `FALSE` para automatizaciones en cron.* |
+| `p_threshold_pct` | `NUMERIC` | `5.00` | **Umbral Porcentual de Basura.** Solo aplica a *scopes* que inician con `'SMART_'`. Define el porcentaje mínimo de tuplas muertas que una tabla debe tener para entrar a la cola. (Ej. `5.00` = 5% de basura detectada). |
+| `p_min_dead_tup` | `INT` | `5000` | **Filtro de Tablas Minúsculas.** Evita desperdiciar ciclos de CPU evaluando tablas ínfimas. Una tabla debe tener al menos este número absoluto de tuplas muertas para ser considerada. *Nota: Si una tabla supera las 100,000 tuplas muertas, ignora el porcentaje e ingresa a la cola automáticamente como medida de protección extrema.* |
+
+ 
