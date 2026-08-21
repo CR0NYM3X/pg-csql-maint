@@ -8,21 +8,23 @@ Ejecuta este bloque para destruir el entorno anterior y crear un volumen de dato
 -- DBA SQUAD: VANGUARD BLACK-OPS | SIMULADOR DE ESTRÉS TRANSACCIONAL
 -- ====================================================================================
 
+create schema IF NOT EXISTS lab;
+
 -- 1. Limpieza Total del Entorno
-DROP TABLE IF EXISTS public.demo_extreme_bloat CASCADE;
-DROP TABLE IF EXISTS public.demo_heavy_updates CASCADE;
-DROP TABLE IF EXISTS public.demo_vip_facturas CASCADE;
-DROP TABLE IF EXISTS public.demo_escudo_historial CASCADE;
-TRUNCATE TABLE public.maintenance_filters RESTART IDENTITY CASCADE;
+DROP TABLE IF EXISTS lab.demo_extreme_bloat CASCADE;
+DROP TABLE IF EXISTS lab.demo_heavy_updates CASCADE;
+DROP TABLE IF EXISTS lab.demo_vip_facturas CASCADE;
+DROP TABLE IF EXISTS lab.demo_escudo_historial CASCADE;
+TRUNCATE TABLE lab.maintenance_filters RESTART IDENTITY CASCADE;
 TRUNCATE TABLE maint.vacuum_full_triage RESTART IDENTITY CASCADE;
 TRUNCATE TABLE maint.vacuum_tasks RESTART IDENTITY CASCADE;
 TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE;
 
 -- 2. Creación de Topología de Tablas
-CREATE TABLE public.demo_extreme_bloat (id SERIAL, payload TEXT, status VARCHAR(20));
-CREATE TABLE public.demo_heavy_updates (id SERIAL, balance NUMERIC, last_tx TIMESTAMPTZ);
-CREATE TABLE public.demo_vip_facturas (id SERIAL, monto NUMERIC, cliente TEXT);
-CREATE TABLE public.demo_escudo_historial (id SERIAL, log_data TEXT);
+CREATE TABLE lab.demo_extreme_bloat (id SERIAL, payload TEXT, status VARCHAR(20));
+CREATE TABLE lab.demo_heavy_updates (id SERIAL, balance NUMERIC, last_tx TIMESTAMPTZ);
+CREATE TABLE lab.demo_vip_facturas (id SERIAL, monto NUMERIC, cliente TEXT);
+CREATE TABLE lab.demo_escudo_historial (id SERIAL, log_data TEXT);
 
 -- ====================================================================================
 -- 3. INYECCIÓN MASIVA DE TRÁFICO (SIMULACIÓN DE 6 MESES DE PRODUCCIÓN)
@@ -31,38 +33,38 @@ CREATE TABLE public.demo_escudo_historial (id SERIAL, log_data TEXT);
 -- [CASO A] TABLA EXTREMA: Objetivo -> SMART_VACUUM_FULL
 -- Insertamos 500,000 filas. Borramos el 90%. Ejecutamos VACUUM normal.
 -- Esto genera páginas de disco llenas de "Huecos Físicos" (Free Space) que requieren Vacuum Full.
-INSERT INTO public.demo_extreme_bloat(payload, status) 
+INSERT INTO lab.demo_extreme_bloat(payload, status) 
 SELECT md5(g::text), 'PROCESADO' FROM generate_series(1, 500000) g;
 
-DELETE FROM public.demo_extreme_bloat WHERE id % 10 != 0; -- Borra 450,000 filas
-VACUUM public.demo_extreme_bloat; -- Convierte las tuplas muertas en Espacio Libre Físico
-ANALYZE public.demo_extreme_bloat;
+DELETE FROM lab.demo_extreme_bloat WHERE id % 10 != 0; -- Borra 450,000 filas
+VACUUM lab.demo_extreme_bloat; -- Convierte las tuplas muertas en Espacio Libre Físico
+ANALYZE lab.demo_extreme_bloat;
 
 -- [CASO B] TABLA DE ALTA TRANSACCIONALIDAD: Objetivo -> Mantenimiento AGGRESSIVE
 -- Insertamos 200,000 filas y las actualizamos para generar tuplas muertas masivas.
-INSERT INTO public.demo_heavy_updates(balance, last_tx) 
+INSERT INTO lab.demo_heavy_updates(balance, last_tx) 
 SELECT g * 10.5, clock_timestamp() FROM generate_series(1, 200000) g;
 
-UPDATE public.demo_heavy_updates SET balance = balance + 1.0; 
-UPDATE public.demo_heavy_updates SET balance = balance + 2.0; -- Doble update = +400k tuplas muertas
-ANALYZE public.demo_heavy_updates;
+UPDATE lab.demo_heavy_updates SET balance = balance + 1.0; 
+UPDATE lab.demo_heavy_updates SET balance = balance + 2.0; -- Doble update = +400k tuplas muertas
+ANALYZE lab.demo_heavy_updates;
 
 -- [CASO C] TABLA VIP (Lista Blanca): Objetivo -> CUSTOM_LIST
-INSERT INTO public.demo_vip_facturas(monto, cliente) 
+INSERT INTO lab.demo_vip_facturas(monto, cliente) 
 SELECT 100.00, 'Cliente VIP' FROM generate_series(1, 50000) g;
-UPDATE public.demo_vip_facturas SET monto = 150.00 WHERE id < 10000;
-ANALYZE public.demo_vip_facturas;
+UPDATE lab.demo_vip_facturas SET monto = 150.00 WHERE id < 10000;
+ANALYZE lab.demo_vip_facturas;
 
 -- [CASO D] TABLA INMUNE (Lista Negra): Objetivo -> ESCUDO DE IGNORADOS
-INSERT INTO public.demo_escudo_historial(log_data) 
+INSERT INTO lab.demo_escudo_historial(log_data) 
 SELECT 'Log de Sistema Crítico' FROM generate_series(1, 100000) g;
-DELETE FROM public.demo_escudo_historial WHERE id < 50000; -- Generamos basura intencional
-ANALYZE public.demo_escudo_historial;
+DELETE FROM lab.demo_escudo_historial WHERE id < 50000; -- Generamos basura intencional
+ANALYZE lab.demo_escudo_historial;
 
 -- ====================================================================================
 -- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
 -- ====================================================================================
-INSERT INTO public.maintenance_filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
+INSERT INTO lab.maintenance_filters (schema_name, table_name, is_ignored, force_maintenance) VALUES 
 ('public', 'demo_escudo_historial', TRUE, FALSE),  -- [ESCUDO ACTIVO]: Intocable.
 ('public', 'demo_vip_facturas', FALSE, TRUE);      -- [PASE VIP]: Mantenimiento prioritario.
 
