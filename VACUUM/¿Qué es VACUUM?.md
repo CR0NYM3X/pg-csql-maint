@@ -17,6 +17,15 @@ El secreto que muchos ignoran sobre el `VACUUM` estándar es que **no devuelve e
 3. **Actualización del VM (Visibility Map):** Marca qué bloques están 100% limpios de basura. Esto es vital para el rendimiento, ya que le permite al Optimizador hacer *Index-Only Scans* (responder consultas a la velocidad de la luz leyendo solo el índice en la RAM, sin tocar el disco duro).
 4. **Congelamiento (Anti-Apocalipsis):** Revisa el reloj interno de transacciones. Si encuentra transacciones muy viejas, las "congela" lógicamente para evitar que el motor colapse por el límite físico de los 2 mil millones de transacciones (*Transaction ID Wraparound*).
 
+### Como obtener el porcentaje de tuplas muertas: 
+Para obtener el porcentaje se hace los siguiente , se suma de tuplas vias y tuplas muertas entre las tuplas muertas y el resultado se multiplicado por 100.
+Se suma las tuplas muertas con las vivas ya que debes de saber cuantas filas tenias originalmente.
+```SQL 
+select ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas,
+* from pg_stat_user_tables where relname = 'demo_extreme_bloat'  order by n_dead_tup desc limit 10;
+```
+
+
 ### 3. ¿Genera Bloqueos en Producción?
 
 Aquí es donde la mayoría de los DBAs novatos se confunden y causan desastres. Todo depende de la versión del comando que dispares:
