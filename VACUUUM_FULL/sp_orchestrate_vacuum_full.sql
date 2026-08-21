@@ -443,3 +443,4 @@ $$;
 REVOKE EXECUTE ON PROCEDURE  maint.sp_orchestrate_vacuum_full FROM PUBLIC;
 
 
+COMMIT;
