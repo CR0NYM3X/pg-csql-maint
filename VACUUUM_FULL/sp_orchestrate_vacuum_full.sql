@@ -183,7 +183,7 @@ DECLARE
     v_op_upper VARCHAR := UPPER(p_threshold_operator);
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
-    PERFORM pg_catalog.set_config('search_path', 'public, pg_temp', true);
+    PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
     -- [QA] Validación estricta del operador lógico
     IF v_op_upper NOT IN ('AND', 'OR') THEN
@@ -279,7 +279,7 @@ $$;
 
 
 
-
+REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 
 
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
@@ -438,5 +438,8 @@ BEGIN
     IF p_verbose THEN RAISE INFO '[✓] ORQUESTACIÓN QUIRÚRGICA FINALIZADA. Procesadas: % / %', v_success_count, v_total_tasks; END IF;
 END;
 $$;
+
+
+REVOKE EXECUTE ON PROCEDURE  maint.sp_orchestrate_vacuum_full FROM PUBLIC;
 
 
