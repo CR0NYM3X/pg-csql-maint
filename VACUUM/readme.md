@@ -147,3 +147,53 @@ Cuando ejecutes el procedimiento almacenado (ya sea vía cron o manual), puedes 
 | `p_min_dead_tup` | `INT` | `5000` | **Filtro de Tablas Minúsculas.** Evita desperdiciar ciclos de CPU evaluando tablas ínfimas. Una tabla debe tener al menos este número absoluto de tuplas muertas para ser considerada. *Nota: Si una tabla supera las 100,000 tuplas muertas, ignora el porcentaje e ingresa a la cola automáticamente como medida de protección extrema.* |
 
  
+
+
+Aquí tienes el bloque exacto en Markdown listo para agregar a tu `README.md`.
+
+Te recomiendo colocarlo **justo después de la sección "🚀 Guía de Ejecución Rápida"** y antes del **"🎛️ Diccionario de Parámetros"**.
+
+---
+
+### ⚡ Optimización Avanzada: Tuning de Sesión Dinámico (Fuerza Bruta)
+
+Si necesitas acelerar una ejecución crítica, `pg-csql-vacuum` incluye un **Puente Dinámico Sesión-Rol**. Detecta automáticamente si alteraste parámetros en tu consola local mediante comandos `SET` y los transmite de forma segura a los *workers* en segundo plano, limpiando el catálogo del sistema al finalizar.
+
+#### Parámetros Soportados para Tuning al Vuelo:
+
+* `maintenance_work_mem`: Asigna RAM masiva para acelerar el procesamiento de índices en memoria.
+* `max_parallel_maintenance_workers`: Asigna más núcleos de CPU por cada tabla encolada.
+* `vacuum_cost_delay`: Controla el "freno de disco" de I/O.
+
+#### Ejemplo de Ejecución Acelerada:
+
+```sql
+-- 1. Configura tus recursos extremos a nivel de sesión actual
+SET maintenance_work_mem = '2GB';
+SET max_parallel_maintenance_workers = 4;
+SET vacuum_cost_delay = 0;
+
+-- 2. Lanza el orquestador (Los background workers heredarán tus 2GB y 4 hilos automáticamente)
+CALL maint.sp_orchestrate_vacuum(
+      p_scope            => 'CUSTOM_LIST',    -- Evalúa solo esquemas de usuario
+      p_profile          => 'AGGRESSIVE',      -- Limpieza de índices automática (Lee maint.vacuum_profiles)
+      p_parallel_workers => 2,                -- Limpia hasta 4 tablas en simultáneo
+      p_cutoff_time      => '05:30:00'::TIME,-- [KILL SWITCH] Aborta cola si dan las 5:30 AM
+      p_verbose          => FALSE,           -- Silencioso (Ideal para ejecución en background/cron)
+      p_threshold_pct    => 5.00,            -- Umbral: Exige > 5% de basura para encolar la tabla
+      p_min_dead_tup     => 5000             -- Filtro: Ignora tablas con menos de 5,000 tuplas muertas
+  ); 
+
+-- 3. Al terminar la orquestación, el procedimiento resetea la configuración del ROL automáticamente en el catálogo.
+
+```
+
+---
+
+> ⚠️ **ADVERTENCIA CRÍTICA DE RECURSOS (I/O & RAM):**
+> * **Saturación de Disco (`vacuum_cost_delay = 0`):** Ajustar el delay a `0` quita por completo el freno de disco. **Nunca uses este valor en horario laboral**, ya que consumirá todo el ancho de banda del almacenamiento e incrementará drásticamente los tiempos de respuesta de tu aplicación.
+> * **Riesgo de Colapso de Memoria (OOM Killer):** Recuerda que `maintenance_work_mem` se multiplica por la concurrencia. Si configuras `2GB` de RAM y ejecutas con `p_parallel_workers => 4`, el proceso usará hasta **8 GB de RAM real de golpe**. Si el servidor se queda sin memoria, el Kernel de Linux (OOM Killer) matará el proceso de PostgreSQL.
+> 
+> 
+
+💡 **Recomendación del Escuadrón:** Usa el tuning de sesión dinámico **únicamente en ventanas de mantenimiento nocturnas o fines de semana**. Para la rutina diaria automática vía `pg_cron`, no ejecutes ningún `SET` previo; deja que el orquestador opere con los valores por defecto (`reset_val`) del servidor para no impactar la operación.
