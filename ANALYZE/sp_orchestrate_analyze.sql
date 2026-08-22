@@ -89,43 +89,66 @@ COMMENT ON COLUMN maint.analyze_tasks.started_at IS 'Marca de tiempo del inicio 
 COMMENT ON COLUMN maint.analyze_tasks.ended_at IS 'Marca de tiempo de finalización del análisis (éxito o fallo).';
 COMMENT ON COLUMN maint.analyze_tasks.error_log IS 'Captura forense del mensaje nativo de error (SQLERRM) extraído de la memoria dinámica.';
 
- 
 
+-- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_analyze(VARCHAR, VARCHAR, INT, BOOLEAN, NUMERIC, INT, TIME, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
-    p_job_type VARCHAR,                  -- 'SMART', 'ALL', 'PRELOAD'
-    p_parallel_workers INT,              -- Cantidad de hilos paralelos
-    p_verbose BOOLEAN DEFAULT FALSE,     -- Diagnóstico visual en tiempo real
-    p_threshold_pct NUMERIC DEFAULT 0.05,-- Umbral de modificación (0.05 = 5%)
-    p_min_rows INT DEFAULT 1000,         -- Límite mínimo absoluto de modificaciones
-    p_cutoff_time TIME DEFAULT NULL      -- [NUEVO] Kill Switch Temporal
+    p_scope VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM'
+    p_profile VARCHAR DEFAULT 'NORMAL',          -- 'NORMAL', 'PRELOAD'
+    p_parallel_workers INT DEFAULT 4,
+    p_verbose BOOLEAN DEFAULT FALSE,
+    p_threshold_pct NUMERIC DEFAULT 0.05,       -- 0.05 = 5%
+    p_min_rows INT DEFAULT 1000,
+    p_cutoff_time TIME DEFAULT NULL,
+    p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
 )
 LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id INT; v_task_id INT; v_schema TEXT; v_table TEXT; v_child_pid INT;
-    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT; v_raw_sql TEXT;
+    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT := 0; v_raw_sql TEXT;
     v_start_time TIMESTAMPTZ := clock_timestamp(); r_finished RECORD;
     v_current_stage INT := 1; v_max_stages INT := 1;
-    v_success_count INT := 0;            -- [NUEVO] Métrica RAM O(1)
+    v_success_count INT := 0;
+    
+    -- Variables para construcción dinámica de SETs en la cadena del worker
+    v_set_prefix TEXT := '';
+    v_target_stat INT;
+    v_param RECORD;
 BEGIN
-   PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
-   -- configuracion de seguridad
-   PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
-    IF p_job_type = 'PRELOAD' THEN v_max_stages := 3; END IF;
+    PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
+    PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
+
+    -- 1. Validar Perfil y determinar número de etapas
+    IF UPPER(p_profile) = 'PRELOAD' THEN 
+        v_max_stages := 3; 
+    ELSIF UPPER(p_profile) <> 'NORMAL' THEN
+        RAISE EXCEPTION 'CRÍTICO: El perfil "%" no es válido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
+    END IF;
+
+    -- 2. Interceptar SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
+    FOR v_param IN (
+        SELECT name, setting 
+        FROM pg_settings 
+        WHERE name IN ('maintenance_work_mem', 'vacuum_cost_delay', 'vacuum_buffer_usage_limit')
+          AND setting IS DISTINCT FROM reset_val
+    ) LOOP
+        v_set_prefix := v_set_prefix || format('SET %I = %L; ', v_param.name, v_param.setting);
+    END LOOP;
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
         RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD';
-        RAISE INFO 'TIPO: % | HILOS: % | FASES: % | CUTOFF: %', p_job_type, p_parallel_workers, v_max_stages, COALESCE(p_cutoff_time::TEXT, 'SIN LÍMITE');
+        RAISE INFO 'ALCANCE: % | PERFIL: % | HILOS: % | FASES: % | CUTOFF: % | HISTORIAL: %', 
+                   p_scope, UPPER(p_profile), p_parallel_workers, v_max_stages, COALESCE(p_cutoff_time::TEXT, 'SIN LÍMITE'), p_keep_history;
         RAISE INFO '=========================================================';
     END IF;
 
-    -- 1. Crear Job Padre
+    -- 3. Crear Job Padre
     INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
-    VALUES (p_job_type, 'ANALYZE', p_threshold_pct, p_parallel_workers, 'RUNNING')
+    VALUES (p_scope || '_' || UPPER(p_profile), 'ANALYZE', p_threshold_pct, p_parallel_workers, 'RUNNING')
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
-    -- 2. BUCLE GLOBAL DE FASES (Soporta PRELOAD)
+    -- 4. BUCLE GLOBAL DE FASES (Soporta PRELOAD)
     WHILE v_current_stage <= v_max_stages LOOP
 
         IF p_verbose THEN
@@ -134,37 +157,51 @@ BEGIN
             RAISE INFO '---------------------------------------------------------';
         END IF;
 
-        -- POBLAR COLA PARA LA FASE ACTUAL
-        IF p_job_type = 'SMART' THEN
-            INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
-            SELECT v_job_id, schemaname, relname, n_live_tup, COALESCE(n_mod_since_analyze, 0),
-                   ROUND((COALESCE(n_mod_since_analyze, 0)::numeric / NULLIF(n_live_tup, 0)) * 100, 2), v_current_stage
-            FROM pg_stat_user_tables
-            WHERE COALESCE(n_mod_since_analyze, 0) >= p_min_rows
-              AND (
-                  (COALESCE(n_mod_since_analyze, 0)::numeric / NULLIF(n_live_tup, 0)) >= p_threshold_pct 
-                  OR COALESCE(n_mod_since_analyze, 0) >= 50000 
-              )
-            ORDER BY COALESCE(n_mod_since_analyze, 0) DESC;
-        ELSE
-            -- ALL o PRELOAD
-            INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
-            SELECT v_job_id, schemaname, relname, n_live_tup, COALESCE(n_mod_since_analyze, 0),
-                   ROUND((COALESCE(n_mod_since_analyze, 0)::numeric / NULLIF(n_live_tup, 0)) * 100, 2), v_current_stage
-            FROM pg_stat_user_tables
-            ORDER BY COALESCE(n_mod_since_analyze, 0) DESC, n_live_tup DESC;
-        END IF;
+        -- POBLAR COLA PARA LA FASE ACTUAL CON INTEGRACIÓN DE FILTROS Y ALCANCE (p_scope)
+        INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
+        SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, COALESCE(st.n_mod_since_analyze, 0),
+               ROUND((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100, 2), v_current_stage
+        FROM pg_stat_all_tables st
+        LEFT JOIN LATERAL (
+            SELECT is_ignored, force_maintenance 
+            FROM maint.filters f 
+            WHERE f.schema_name = st.schemaname AND f.table_name = st.relname 
+              AND f.maintenance_action IN ('ALL', 'ANALYZE')
+            ORDER BY CASE WHEN f.maintenance_action = 'ANALYZE' THEN 1 ELSE 2 END ASC LIMIT 1
+        ) mf ON TRUE
+        WHERE st.schemaname <> 'pg_toast' 
+          AND COALESCE(mf.is_ignored, FALSE) = FALSE
+          AND (
+              (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
+              (p_scope IN ('SMART_USER', 'ALL_USER') AND st.schemaname NOT IN ('pg_catalog', 'information_schema')) OR
+              (p_scope IN ('SMART_SYSTEM_USER', 'ALL_SYSTEM_USER')) OR
+              (p_scope = 'ALL_SYSTEM' AND st.schemaname IN ('pg_catalog', 'information_schema'))
+          )
+          AND (
+              (p_scope LIKE 'SMART%' AND COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
+                  (COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) >= p_threshold_pct 
+                  OR COALESCE(st.n_mod_since_analyze, 0) >= 50000 
+                  OR mf.force_maintenance = TRUE
+              )) OR
+              (p_scope NOT LIKE 'SMART%')
+          )
+        ORDER BY COALESCE(st.n_mod_since_analyze, 0) DESC, st.n_live_tup DESC;
         COMMIT;
 
         SELECT COUNT(*) INTO v_total_tasks FROM maint.analyze_tasks WHERE job_id = v_job_id AND stage_number = v_current_stage;
 
         IF v_current_stage = 1 AND v_total_tasks = 0 THEN
-            IF p_verbose THEN RAISE INFO '[✓] Sistema óptimo. Ninguna tabla superó los umbrales.'; END IF;
+            IF p_verbose THEN 
+                RAISE INFO '---------------------------------------------------------';
+                RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema óptimo)', v_job_id;
+                RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+                RAISE INFO '=========================================================';
+            END IF;
             UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
             COMMIT; RETURN;
         END IF;
 
-        -- 3. BUCLE DE DESPACHO ASÍNCRONO
+        -- 5. BUCLE DE DESPACHO ASÍNCRONO
         LOOP
             -- A. RECOLECTOR FORENSE
             FOR r_finished IN 
@@ -176,16 +213,16 @@ BEGIN
                     PERFORM * FROM public.pg_background_result(r_finished.child_pid::INT) AS (result TEXT);
 
                     UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
-                    v_success_count := v_success_count + 1; -- [NUEVO] Incremento RAM
-                    IF p_verbose THEN RAISE INFO '   [✓] ÉXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
+                    v_success_count := v_success_count + 1;
+                    IF p_verbose THEN RAISE INFO '    [✓] ÉXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
                 EXCEPTION WHEN OTHERS THEN
                     UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM, child_pid = NULL WHERE task_id = r_finished.task_id;
-                    IF p_verbose THEN RAISE WARNING '   [X] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
+                    IF p_verbose THEN RAISE WARNING '    [X] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
                 END;
                 COMMIT;
             END LOOP;
 
-            -- B. [NUEVO] FRENO DE EMERGENCIA (KILL-SWITCH)
+            -- B. FRENO DE EMERGENCIA (KILL-SWITCH)
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
                 UPDATE maint.analyze_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' 
                 WHERE job_id = v_job_id AND stage_number = v_current_stage AND status = 'PENDING';
@@ -197,7 +234,7 @@ BEGIN
             SELECT COUNT(*) INTO v_pending_tasks FROM maint.analyze_tasks WHERE job_id = v_job_id AND stage_number = v_current_stage AND status = 'PENDING';
 
             IF v_active_workers = 0 AND v_pending_tasks = 0 THEN 
-                EXIT; -- Terminó la Fase actual, sale del bucle interno
+                EXIT; -- Terminó la fase actual
             END IF;
 
             -- D. DESPACHADOR DE TAREAS
@@ -213,15 +250,15 @@ BEGIN
                     UPDATE maint.analyze_tasks SET status = 'RUNNING', started_at = clock_timestamp() WHERE task_id = v_task_id;
                     COMMIT;
 
-                    v_raw_sql := 'SET maintenance_work_mem = ''8GB''; SET vacuum_cost_delay = 0; ';
+                    -- Ensamblado dinámico de la consulta con SETs inline
+                    v_raw_sql := v_set_prefix;
 
-                    IF p_job_type = 'PRELOAD' THEN
-                        IF v_current_stage = 1 THEN v_raw_sql := v_raw_sql || format('SET default_statistics_target = 1; ANALYZE %I.%I; ', v_schema, v_table);
-                        ELSIF v_current_stage = 2 THEN v_raw_sql := v_raw_sql || format('SET default_statistics_target = 10; ANALYZE %I.%I; ', v_schema, v_table);
-                        ELSE v_raw_sql := v_raw_sql || format('RESET default_statistics_target; ANALYZE %I.%I; ', v_schema, v_table); END IF;
-                    ELSE
-                        v_raw_sql := v_raw_sql || format('ANALYZE %I.%I; ', v_schema, v_table);
+                    IF UPPER(p_profile) = 'PRELOAD' THEN
+                        v_target_stat := CASE v_current_stage WHEN 1 THEN 1 WHEN 2 THEN 10 ELSE 100 END;
+                        v_raw_sql := v_raw_sql || format('SET default_statistics_target = %s; ', v_target_stat);
                     END IF;
+
+                    v_raw_sql := v_raw_sql || format('ANALYZE %I.%I;', v_schema, v_table);
 
                     v_child_pid := public.pg_background_launch(v_raw_sql);
                     UPDATE maint.analyze_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id;
@@ -234,7 +271,6 @@ BEGIN
             PERFORM pg_sleep(1);
         END LOOP;
 
-        -- [NUEVO] ABORTO DE FASES SUBSECUENTES SI SE EXCEDIO EL TIEMPO
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
             IF p_verbose THEN RAISE WARNING '[!] Ventana de mantenimiento excedida. Abortando fases restantes.'; END IF;
             EXIT; 
@@ -243,23 +279,29 @@ BEGIN
         v_current_stage := v_current_stage + 1;
     END LOOP;
 
-    -- 4. CIERRE CON MÉTRICAS INTEGRADAS
+    -- 6. CIERRE, REPORTE Y PURGA OPCIONAL
     IF EXISTS (SELECT 1 FROM maint.analyze_tasks WHERE job_id = v_job_id AND status = 'SKIPPED_TIME_LIMIT') THEN
         UPDATE maint.jobs SET status = 'COMPLETED_WITH_CUTOFF', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     ELSE
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     END IF;
+
+    -- Purga de la cola de tareas si el DBA no desea almacenar el historial de tareas
+    IF NOT p_keep_history THEN
+        DELETE FROM maint.analyze_tasks WHERE job_id = v_job_id;
+        IF p_verbose THEN RAISE INFO '[ - ] Purga ejecutada: Registros de maint.analyze_tasks eliminados para el Job %.', v_job_id; END IF;
+    END IF;
+
     COMMIT;
 
     IF p_verbose THEN
         RAISE INFO '---------------------------------------------------------';
-        RAISE INFO '[DBA SQUAD] ORQUESTACIÓN FINALIZADA. Tablas procesadas: %', v_success_count;
-        RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
+        RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
+        RAISE INFO '  Tiempo Total: %', (clock_timestamp() - v_start_time);
         RAISE INFO '=========================================================';
     END IF;
 END;
 $$;
-
 
 
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_analyze FROM PUBLIC;
