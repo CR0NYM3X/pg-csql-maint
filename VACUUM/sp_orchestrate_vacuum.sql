@@ -154,6 +154,7 @@ ON maint.vacuum_tasks (job_id, status, task_id);
 /* =========================================================================================
    PROCEDIMIENTO: maint.sp_orchestrate_vacuum
 ========================================================================================= */
+-- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_vacuum(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, INT);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
     p_scope VARCHAR DEFAULT 'SMART_USER',
     p_profile VARCHAR DEFAULT 'BALANCED',
@@ -161,7 +162,8 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_threshold_pct NUMERIC DEFAULT 5.00,
-    p_min_dead_tup INT DEFAULT 5000
+    p_min_dead_tup INT DEFAULT 5000,
+    p_keep_history BOOLEAN DEFAULT TRUE -- [NUEVO] TRUE = Conserva auditoría; FALSE = Purga detalles al terminar
 )
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -171,10 +173,13 @@ DECLARE
     r_finished RECORD; v_last_job_id INT;
     v_success_count INT := 0; 
     
+    -- [AGREGADO] Cronómetro de ejecución
+    v_start_time TIMESTAMPTZ := clock_timestamp();
+    
     -- Variables para leer la configuración del perfil
     r_profile RECORD;
 
-    -- [AGREGADO] Variables para interceptar SETs locales y transmitirlos a los workers
+    -- Variables para interceptar SETs locales y transmitirlos a los workers
     v_param RECORD;
     v_changed_params TEXT[] := '{}';
 BEGIN
@@ -182,7 +187,7 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
     -- =====================================================================
-    -- [AGREGADO] INTERCEPCIÓN DE PARÁMETROS DE SESIÓN AL INICIO (UNA SOLA VEZ)
+    -- INTERCEPCIÓN DE PARÁMETROS DE SESIÓN AL INICIO (UNA SOLA VEZ)
     -- =====================================================================
     FOR v_param IN (
         SELECT name, setting 
@@ -199,7 +204,7 @@ BEGIN
     END IF;
     -- =====================================================================
 
-    -- [NUEVO] VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
+    -- VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
     SELECT * INTO r_profile FROM maint.vacuum_profiles WHERE UPPER(profile_name) = UPPER(p_profile);
     IF NOT FOUND THEN
         RAISE EXCEPTION 'CRÍTICO: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
@@ -211,7 +216,7 @@ BEGIN
 
     SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || UPPER(p_profile)) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
 
-    -- Triage de Tareas (Lógica V3 inalterada)
+    -- Triage de Tareas (Lógica inalterada)
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
            ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
@@ -239,11 +244,19 @@ BEGIN
     COMMIT;
 
     SELECT COUNT(*) INTO v_total_tasks FROM maint.vacuum_tasks WHERE job_id = v_job_id;
+    
+    -- SALIDA TEMPRANA (Sin candidatas)
     IF v_total_tasks = 0 THEN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
-        IF p_verbose THEN RAISE INFO '[!] No hay tablas candidatas que cumplan los filtros actuales.'; END IF;
         
-        -- Restos de limpieza si no hubo tareas a procesar
+        IF p_verbose THEN 
+            RAISE INFO '---------------------------------------------------------';
+            RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: 0 / 0 (Sin tablas candidatas)', v_job_id;
+            RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+            RAISE INFO '=========================================================';
+        END IF;
+        
+        -- Restos de limpieza de rol si no hubo tareas a procesar
         IF array_length(v_changed_params, 1) > 0 THEN
             FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
                 EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]);
@@ -254,7 +267,7 @@ BEGIN
     END IF;
 
     -- =====================================================================
-    -- [NUEVO] ENSAMBLADOR SEGURO DE LA SINTAXIS VACUUM (Zero SQLi)
+    -- ENSAMBLADOR SEGURO DE LA SINTAXIS VACUUM (Zero SQLi)
     -- =====================================================================
     v_options_str := '';
     IF r_profile.skip_locked THEN v_options_str := v_options_str || 'SKIP_LOCKED ON, '; END IF;
@@ -300,7 +313,6 @@ BEGIN
             IF v_task_id IS NOT NULL THEN
                 UPDATE maint.vacuum_tasks SET status = 'RUNNING', started_at = clock_timestamp() WHERE task_id = v_task_id; COMMIT;
 
-                -- [NUEVO] Inyección segura de las opciones dinámicas generadas
                 v_raw_sql := format('VACUUM (%s) %I.%I;', v_options_str, v_schema, v_table);
 
                 v_child_pid := public.pg_background_launch(v_raw_sql);
@@ -313,6 +325,7 @@ BEGIN
         PERFORM pg_sleep(1);
     END LOOP;
 
+    -- CIERRE DE ESTADO DE JOB
     IF EXISTS (SELECT 1 FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'SKIPPED_TIME_LIMIT') THEN
         UPDATE maint.jobs SET status = 'COMPLETED_WITH_CUTOFF', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     ELSE
@@ -320,7 +333,15 @@ BEGIN
     END IF;
 
     -- =====================================================================
-    -- [AGREGADO] LIMPIEZA DEL ROL AL FINALIZAR TODA LA ORQUESTACIÓN (UNA SOLA VEZ)
+    -- [NUEVO] PURGA OPCIONAL DE LA COLA DE TAREAS (Modo Higiénico)
+    -- =====================================================================
+    IF NOT p_keep_history THEN
+        DELETE FROM maint.vacuum_tasks WHERE job_id = v_job_id;
+        IF p_verbose THEN RAISE INFO '[🧹] Purga ejecutada: Registros de maint.vacuum_tasks eliminados para el Job %.', v_job_id; END IF;
+    END IF;
+
+    -- =====================================================================
+    -- LIMPIEZA DEL ROL AL FINALIZAR TODA LA ORQUESTACIÓN
     -- =====================================================================
     IF array_length(v_changed_params, 1) > 0 THEN
         FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
@@ -329,7 +350,14 @@ BEGIN
     END IF;
 
     COMMIT;
-    IF p_verbose THEN RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks; END IF;
+
+    -- [NUEVO] REPORTE DE BANNER FINAL HOMOLOGADO
+    IF p_verbose THEN 
+        RAISE INFO '---------------------------------------------------------';
+        RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
+        RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+        RAISE INFO '=========================================================';
+    END IF;
 END;
 $$;
 
