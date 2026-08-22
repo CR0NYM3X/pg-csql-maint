@@ -1,172 +1,154 @@
 
 # 🛡️ pg-csql-analyze
 
-## 🛠️ ¿PARA QUÉ SIRVE EL ORQUESTADOR analyze?
+## 🛠️ ¿PARA QUÉ SIRVE EL ORQUESTADOR ANALYZE?
 
 Es un **motor de mantenimiento asíncrono y paralelo para PostgreSQL** diseñado para mantener al optimizador de consultas en su punto máximo de rendimiento.
 
-* **Evita la degradación del sistema:** Automatiza el refresco de estadísticas (`ANALYZE`)  sin bloquear las transacciones activas de los usuarios.
-* **Control de recursos de bajo nivel:** Administra pools de hilos concurrentes, elimina procesos zombis automáticamente y realiza recolección de memoria (GC) para jamás saturar la RAM ni el CPU.
-* **Trazabilidad Forense:** Guarda un historial inmutable de cada intervención (filas afectadas, tiempos de ejecución y porcentaje de desfase `drift_pct`) en tablas de auditoría.
+* **Evita la degradación del sistema:** Automatiza el refresco de estadísticas (`ANALYZE`) sin bloquear las transacciones activas de los usuarios ni generar *locks* pesados.
+* **Control de recursos de bajo nivel:** Administra pools de hilos concurrentes, elimina procesos zombis automáticamente y permite la recolección de memoria (GC) para jamás saturar la RAM ni el CPU.
+* **Trazabilidad Forense Eficiente:** Guarda un historial inmutable de cada intervención (filas afectadas, tiempos de ejecución y porcentaje de desfase `drift_pct`) en tablas de auditoría, con capacidad de purga automática para evitar el *bloat* del propio orquestador.
 
-```
-Futuras actualizaciones agregar y actualizar p_job_type :
-SMART_USER
-SMART_SYSTEM
-SMART_USER_SYSTEM
-ALL_USER_SYSTEM
-
--- Tambien agregarle para que desde el inicio desde la primera ejecucion valide el tema de la hora y no guarde las tablas esto para que no ocupe espacio.
-```
-
+> ⚠️ **ACLARACIÓN TÁCTICA:**
+> A diferencia de `VACUUM`, `ANALYZE` es una operación extremadamente ligera y *Non-Blocking*. Esta herramienta está diseñada para mantener los histogramas del motor actualizados, asegurando que PostgreSQL siempre elija el plan de ejecución más rápido posible.
 
 ---
 
-## 🚦 MODOS DE EJECUCIÓN (`p_job_type`)
+## 🏛️ El Cuarto de Control (Arquitectura de Tablas)
 
-### 1. `'SMART'` (El Mantenimiento Quirúrgico Diario)
+El orquestador no opera a ciegas; está gobernado por 3 tablas maestras que actúan como su memoria y panel de seguridad:
 
-* **¿Para qué sirve?:** Es el modo **inteligente y autónomo**. En lugar de procesar toda la base de datos a ciegas, lee la telemetría interna del motor (`pg_stat_user_tables`) y selecciona **única y exclusivamente las tablas que están "sucias" o desfasadas**.
-* **Criterio de selección:**
-* Ignora la "morralla" (tablas con menos de `p_min_rows` modificaciones; por defecto **1,000** filas).
-* Evalúa si sufrieron alta volatilidad (cambios mayor a `p_threshold_pct`; por defecto **5%**).
-* O si sufrieron un volumen masivo absoluto (más de **50,000** modificaciones sin importar el porcentaje).
+### 1. `maint.jobs` (La Cabecera Global)
 
+Almacena el identificador global del ciclo de trabajo, cuántos hilos paralelos se usaron, la hora de inicio/fin y el estado general (`RUNNING`, `COMPLETED`, `COMPLETED_WITH_CUTOFF`). Es tu vista macro de auditoría operativa.
 
-* **Caso de uso ideal:** **Mantenimiento nocturno programado de rutina** (vía `pg_cron` a la 1:00 AM o 2:00 AM). Procesa lo que se ensució en el día en cuestión de minutos, ahorrando ciclos de CPU y lecturas de disco SSD.
+### 2. `maint.analyze_tasks` (La Cola Transaccional y Auditoría)
 
----
+Es la memoria operativa en tiempo real. Rastrea el milisegundo exacto en que una tabla empezó a procesarse, qué PID la tomó, su nivel de desfase estadístico y guarda el error nativo (`SQLERRM`) si algo falló. Mediante el parámetro `p_keep_history`, esta tabla puede limpiarse automáticamente tras cada ejecución para ahorrar espacio, o conservarse para análisis forense.
 
-### 2. `'ALL'` (El Mantenimiento Masivo de Catálogo)
+### 3. `maint.filters` (Panel de Granularidad y Excepciones)
 
-* **¿Para qué sirve?:** Ejecuta un `ANALYZE` **sobre absolutamente todas las tablas de usuario** existentes en el catálogo, sin importar si sufrieron cambios o no.
-* **Criterio de selección:** Lee `pg_stat_user_tables` completo y ordena las tablas para procesar primero las que tienen mayor volumen de filas modificadas y vivas.
-* **Caso de uso ideal:** Mantenimientos profundos de **fin de semana** o ventanas de mantenimiento generales donde se requiere forzar la actualización del 100% de los histogramas del optimizador de la base de datos.
+Funciona como Lista Negra y Lista VIP. Te permite bloquear o forzar mantenimientos a nivel de tabla con precisión quirúrgica, previniendo análisis innecesarios en tablas congeladas.
 
----
-
-### 3. `'PRELOAD'` (La Recuperación de Emergencia en Fases)
-
-* **¿Para qué sirve?:** Emula el flag `--analyze-in-stages` del binario de Linux `vacuumdb`. Ejecuta **3 pasadas consecutivas de `ANALYZE` por cada tabla**, manipulando dinámicamente el parámetro `default_statistics_target`:
-1. *Fase 1 (`target = 1`):* Muestra ultra rápida para dar un mapa básico de inmediato.
-2. *Fase 2 (`target = 10`):* Muestra media para ajustar histogramas.
-3. *Fase 3 (`RESET target`):* Análisis profundo definitivo (target por defecto del servidor, usualmente 100).
-
-
-* **Caso de uso ideal:** **Exclusivo para escenarios post-desastre:** inmediatamente después de una restauración de base de datos (Point-in-Time Recovery), post-migración de servidor o al levantar un entorno desde cero, permitiendo que el planificador de consultas tenga estadísticas útiles de inmediato sin esperar a que termine un análisis completo.
-
----
- 
-### 📋 RESUMEN TÁCTICO DE INVOCACIÓN
+**Ejemplos prácticos de configuración de Filtros:**
 
 ```sql
--- 1. Mantenimiento Diario Autónomo (Recomendado)
-CALL maint.sp_orchestrate_analyze(p_job_type => 'SMART', p_parallel_workers => 4, p_verbose => TRUE);
+-- RESTRICCIÓN (Lista Negra): Evitar que 'historico_logs' sea evaluada por el ANALYZE
+INSERT INTO maint.filters (schema_name, table_name, maintenance_action, is_ignored) 
+VALUES ('public', 'historico_logs', 'ANALYZE', TRUE);
 
--- 2. Mantenimiento Masivo de Fin de Semana
-CALL maint.sp_orchestrate_analyze(p_job_type => 'ALL', p_parallel_workers => 8, p_verbose => FALSE);
-
--- 3. Mantenimiento de Emergencia Post-Restauración
-CALL maint.sp_orchestrate_analyze(p_job_type => 'PRELOAD', p_parallel_workers => 8, p_verbose => TRUE);
+-- FORZADO VIP (Lista Blanca): Obligar a analizar 'usuarios' siempre, ignorando umbrales
+INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
+VALUES ('public', 'usuarios', 'ANALYZE', TRUE);
 
 ```
 
+---
 
+## 🚦 ÁMBITOS DE COBERTURA (`p_scope`)
 
+Controla qué universo de tablas entra a la cola de evaluación. Los parámetros de control de volatilidad (`p_threshold_pct` y `p_min_rows`) solo son respetados por los alcances inteligentes (`SMART`).
 
-### 🎮 EL MODO DE USO: DOS ESCENARIOS TÁCTICOS
+| Valor | Descripción | ¿Evalúa Umbrales (Volatilidad)? |
+| --- | --- | --- |
+| **`SMART_USER`** *(Default)* | Mantenimiento Quirúrgico Diario. Solo procesa tablas de usuario que crucen los umbrales de modificaciones. | ✅ **SÍ** |
+| **`ALL_USER`** | Ejecuta sobre todas las tablas de usuario, ignorando si sufrieron cambios. | ❌ **NO** |
+| **`CUSTOM_LIST`** | Solo procesa las tablas marcadas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** |
+| **`SMART_SYSTEM_USER`** | Igual que `SMART_USER`, pero evalúa también los catálogos internos de PostgreSQL. | ✅ **SÍ** |
+| **`ALL_SYSTEM_USER`** | Limpia todas las tablas de usuario y catálogos de sistema a fuerza bruta. | ❌ **NO** |
+| **`ALL_SYSTEM`** | Exclusivo para catálogos del motor (`pg_catalog`, `information_schema`). | ❌ **NO** |
 
-#### 1. El Bisturí (Prueba Visual en tu Consola)
+---
 
-Lo lanzas con `TRUE` en tu DBeaver, se queda "trabado", pero te va imprimiendo un log hermoso en la pestaña de mensajes:
+## ⚙️ PERFILES DE EJECUCIÓN (`p_profile`)
+
+| Perfil | Comportamiento Táctico |
+| --- | --- |
+| **`NORMAL`** *(Default)* | Análisis estándar de 1 sola pasada respetando el `default_statistics_target` del servidor. |
+| **`PRELOAD`** | **Modo de Recuperación en Fases (Disaster Recovery).** Emula `--analyze-in-stages`. Ejecuta 3 pasadas consecutivas por tabla inyectando dinámicamente *targets* estadísticos progresivos (Fase 1: target=1, Fase 2: target=10, Fase 3: target=Default). Ideal post-restauración masiva para dar planes rápidos al optimizador de forma casi inmediata. |
+
+---
+
+## 🚀 GUÍA DE EJECUCIÓN RÁPIDA (Deploy & Forget)
+
+La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu consola SSH.
+
+### MÉTODO 1: Automatización Absoluta Nocturna (Vía `pg_cron`) 🌙
+
+**Recomendación:** Madrugadas. El orquestador limpiará su propio rastro (`p_keep_history => FALSE`) y abortará limpiamente si se excede el límite de tiempo.
 
 ```sql
---- TU CONSOLA SE BLOQUEADA  hasta que termine de procesar todas las tablas.
-
-CALL maint.sp_orchestrate_analyze(
-    p_job_type         => 'SMART', 
-    p_parallel_workers => 4, 
-    p_verbose          => TRUE,
-    p_threshold_pct    => 0.05, 
-    p_min_rows         => 1000  -- <-- ¡ESTA ES LA CLAVE PARA TU LABORATORIO!
-);
+SELECT cron.schedule_in_database('vanguard_smart_analyze_daily', '0 2 * * *', 
+$$ 
+  CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',   -- Solo tablas de usuario modificadas
+      p_profile          => 'NORMAL',       -- 1 pasada estándar
+      p_parallel_workers => 4,              -- 4 núcleos simultáneos
+      p_verbose          => FALSE,          -- Silencioso
+      p_threshold_pct    => 0.05,           -- Umbral del 5% de volatilidad
+      p_min_rows         => 1000,           -- Ignora tablas con < 1000 cambios
+      p_cutoff_time      => '06:00:00'::TIME, -- [KILL SWITCH] Aborto a las 6:00 AM
+      p_keep_history     => FALSE           -- [HIGIENE] Purgar detalles al terminar para no ocupar espacio
+  ); 
+$$, 
+'mi_base_de_datos', 'postgres', true);
 
 ```
 
-**Resultado Visual Esperado:**
+### MÉTODO 2: El Botón de Pánico Asíncrono Diurno (Vía `pg_background`) ⚡
 
-```text
-INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR DE MANTENIMIENTO VANGUARD
-INFO:  TIPO: SMART | ACCIÓN: ANALYZE | HILOS: 4 | UMBRAL: %5.00 | MIN CAMBIOS: 1000
-INFO:  =========================================================
-INFO:  [+] JOB ID Asignado: 2
-INFO:  [+] Total de tablas que requieren intervención: 5
-INFO:  ---------------------------------------------------------
-INFO:     [>] LANZANDO -> Hilo 56479 asignado a Tabla: maint.lab_sesiones (Task ID: 6)
-INFO:     [>] LANZANDO -> Hilo 56480 asignado a Tabla: maint.lab_carritos (Task ID: 7)
-INFO:     [>] LANZANDO -> Hilo 56481 asignado a Tabla: maint.lab_pedidos (Task ID: 8)
-INFO:     [>] LANZANDO -> Hilo 56482 asignado a Tabla: maint.lab_logs_auditoria (Task ID: 9)
-INFO:     [✓] ÉXITO -> Tabla: maint.lab_carritos (Task ID: 7)
-INFO:     [✓] ÉXITO -> Tabla: maint.lab_logs_auditoria (Task ID: 9)
-INFO:     [✓] ÉXITO -> Tabla: maint.lab_pedidos (Task ID: 8)
-INFO:     [✓] ÉXITO -> Tabla: maint.lab_sesiones (Task ID: 6)
-INFO:     [>] LANZANDO -> Hilo 56483 asignado a Tabla: maint.lab_inventario (Task ID: 10)
-INFO:     [✓] ÉXITO -> Tabla: maint.lab_inventario (Task ID: 10)
-INFO:  ---------------------------------------------------------
-INFO:  [DBA SQUAD] ORQUESTACIÓN FINALIZADA CON ÉXITO.
-INFO:  Tiempo Total: 00:00:02.036088
-INFO:  =========================================================
-```
+**Recomendación:** Urgencias diurnas sobre tablas VIP o post-restauración (PRELOAD).
 
-#### 2. Modos Ejecuta y Suelta
-
-
-**MÉTODO 1: EL FANTASMA MANUAL (Vía pg_background_launch)**
 ```sql
-SELECT * 
-FROM public.pg_background_launch(
+SELECT * FROM public.pg_background_launch(
     $$
       CALL maint.sp_orchestrate_analyze(
-          p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
-          p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
-          p_verbose          => FALSE,          -- Silencioso: Como se ejecuta en automático, no saturamos el log
-          p_threshold_pct    => 0.05,           -- Umbral del 5%: Solo toca la tabla si el 5% de sus datos cambiaron
-          p_min_rows         => 1000,           -- Filtro anti-morralla: Ignora tablas con menos de 1,000 cambios
-          p_cutoff_time      => '06:00:00'::TIME -- [KILL SWITCH]: Aborto automático a las 6:00 AM exactas
+          p_scope            => 'CUSTOM_LIST', -- Lista VIP (maint.filters)
+          p_profile          => 'PRELOAD',     -- 3 fases progresivas
+          p_parallel_workers => 8,             -- Máxima fuerza bruta
+          p_keep_history     => TRUE           -- Retener auditoría forense
       );
     $$
 );
-
-
+-- Devuelve un PID. Para monitorear: SELECT * FROM public.pg_background_result(TU_PID) AS (result TEXT);
 
 ```
-
-**MÉTODO 2: LA AUTOMATIZACIÓN ABSOLUTA (Vía pg_cron)**
-```SQL
--- Programa el orquestador para que despierte todos los días a las 02:00 AM
-SELECT cron.schedule_in_database(
-    'vanguard_smart_analyze_daily', 
-    '0 2 * * *', 
-    $$ 
-    CALL maint.sp_orchestrate_analyze(
-        p_job_type         => 'SMART', 
-        p_parallel_workers => 4, 
-        p_verbose          => FALSE, 
-        p_threshold_pct    => 0.05, 
-        p_min_rows         => 1000,
-        p_cutoff_time      => '06:00:00'::TIME
-    ); 
-    $$,
-    'mi_base_de_datos', 
-    'postgres', 
-    true
-);
-```
-
-
-
-
-
 
 ---
+
+## ⚡ OPTIMIZACIÓN AVANZADA: Tuning de Sesión Dinámico
+
+`pg-csql-analyze` posee un **Puente Dinámico Sesión-Worker**. Antes de encolar las tareas, detecta automáticamente si alteraste parámetros de rendimiento en tu consola mediante comandos `SET` y los inyecta directamente (*inline*) a los *workers* en segundo plano.
+
+**Parámetros Soportados para Inyección Dinámica:**
+
+* `maintenance_work_mem`
+* `vacuum_cost_delay`
+* `vacuum_buffer_usage_limit` *(PostgreSQL 16+)*
+
+**Ejemplo de uso:**
+
+```sql
+-- 1. Acelera el I/O en tu sesión actual
+SET maintenance_work_mem = '4GB';
+SET vacuum_cost_delay = 0;
+
+-- 2. Lanza el orquestador (Los workers asíncronos heredarán tus 4GB y 0 delay automáticamente)
+CALL maint.sp_orchestrate_analyze(p_scope => 'SMART_USER');
+
+```
+
+---
+
+## 🎛️ DICCIONARIO DE PARÁMETROS
+
+| Parámetro | Tipo | Default | Descripción Táctica |
+| --- | --- | --- | --- |
+| `p_scope` | `VARCHAR` | `'SMART_USER'` | Define qué tablas se evalúan. Valores: `'SMART_USER'`, `'ALL_USER'`, `'CUSTOM_LIST'`, `'SMART_SYSTEM_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`. |
+| `p_profile` | `VARCHAR` | `'NORMAL'` | `'NORMAL'` para uso diario. `'PRELOAD'` para recuperación de emergencia en 3 fases estadísticas. |
+| `p_parallel_workers` | `INT` | `4` | Nivel de concurrencia. Número de tablas analizadas simultáneamente. |
+| `p_verbose` | `BOOLEAN` | `FALSE` | Modo Diagnóstico. Si es `TRUE`, imprime logs en tiempo real. Usar solo en consolas interactivas (DBeaver/pgAdmin). |
+| `p_threshold_pct` | `NUMERIC` | `0.05` | *(Aplica a SMART)* Porcentaje mínimo de filas modificadas respecto al total (0.05 = 5%). |
+| `p_min_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad absoluta mínima de modificaciones para considerar la tabla. |
+| `p_cutoff_time` | `TIME` | `NULL` | **Kill Switch.** Hora militar tope. Si se supera, aborta las tareas encoladas limpiamente. |
+| `p_keep_history` | `BOOLEAN` | `TRUE` | **Purga Efímera.** `TRUE` conserva el detalle del job en `analyze_tasks`. `FALSE` elimina los registros detallados al finalizar, previniendo el *bloat* del orquestador. (La tabla `jobs` nunca se borra). |
