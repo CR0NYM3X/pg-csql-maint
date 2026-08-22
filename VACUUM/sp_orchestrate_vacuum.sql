@@ -173,9 +173,31 @@ DECLARE
     
     -- Variables para leer la configuración del perfil
     r_profile RECORD;
+
+    -- [AGREGADO] Variables para interceptar SETs locales y transmitirlos a los workers
+    v_param RECORD;
+    v_changed_params TEXT[] := '{}';
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
+
+    -- =====================================================================
+    -- [AGREGADO] INTERCEPCIÓN DE PARÁMETROS DE SESIÓN AL INICIO (UNA SOLA VEZ)
+    -- =====================================================================
+    FOR v_param IN (
+        SELECT name, setting 
+        FROM pg_settings 
+        WHERE name IN ('max_parallel_maintenance_workers', 'maintenance_work_mem', 'vacuum_cost_delay')
+          AND setting IS DISTINCT FROM reset_val
+    ) LOOP
+        EXECUTE format('ALTER ROLE %I SET %I = %L', current_user, v_param.name, v_param.setting);
+        v_changed_params := array_append(v_changed_params, v_param.name);
+    END LOOP;
+
+    IF array_length(v_changed_params, 1) > 0 THEN
+        COMMIT; -- Forzamos commit para que los futuros background workers lean la nueva config del rol
+    END IF;
+    -- =====================================================================
 
     -- [NUEVO] VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
     SELECT * INTO r_profile FROM maint.vacuum_profiles WHERE UPPER(profile_name) = UPPER(p_profile);
@@ -220,6 +242,14 @@ BEGIN
     IF v_total_tasks = 0 THEN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
         IF p_verbose THEN RAISE INFO '[!] No hay tablas candidatas que cumplan los filtros actuales.'; END IF;
+        
+        -- Restos de limpieza si no hubo tareas a procesar
+        IF array_length(v_changed_params, 1) > 0 THEN
+            FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
+                EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]);
+            END LOOP;
+        END IF;
+
         COMMIT; RETURN;
     END IF;
 
@@ -288,6 +318,16 @@ BEGIN
     ELSE
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     END IF;
+
+    -- =====================================================================
+    -- [AGREGADO] LIMPIEZA DEL ROL AL FINALIZAR TODA LA ORQUESTACIÓN (UNA SOLA VEZ)
+    -- =====================================================================
+    IF array_length(v_changed_params, 1) > 0 THEN
+        FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
+            EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]);
+        END LOOP;
+    END IF;
+
     COMMIT;
     IF p_verbose THEN RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks; END IF;
 END;
