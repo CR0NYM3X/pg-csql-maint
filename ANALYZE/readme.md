@@ -149,6 +149,6 @@ CALL maint.sp_orchestrate_analyze(p_scope => 'SMART_USER');
 | `p_parallel_workers` | `INT` | `4` | Nivel de concurrencia. Número de tablas analizadas simultáneamente. |
 | `p_verbose` | `BOOLEAN` | `FALSE` | Modo Diagnóstico. Si es `TRUE`, imprime logs en tiempo real. Usar solo en consolas interactivas (DBeaver/pgAdmin). |
 | `p_threshold_pct` | `NUMERIC` | `5.0` | *(Aplica a SMART)* Porcentaje mínimo de filas modificadas respecto al total. |
-| `p_min_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad absoluta mínima de modificaciones para considerar la tabla. |
+| `p_min_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad  mínima de modificaciones para considerar la tabla. |
 | `p_cutoff_time` | `TIME` | `NULL` | **Kill Switch.** Hora militar tope. Si se supera, aborta las tareas encoladas limpiamente. |
 | `p_keep_history` | `BOOLEAN` | `TRUE` | **Purga Efímera.** `TRUE` conserva el detalle del job en `analyze_tasks`. `FALSE` elimina los registros detallados al finalizar, previniendo el *bloat* del orquestador. (La tabla `jobs` nunca se borra). |
