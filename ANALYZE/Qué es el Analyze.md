@@ -12,7 +12,29 @@ Es el comando que escanea las tablas y recolecta estadísticas matemáticas sobr
 Realizar el analyze tambien actualiza en memoria  la vista pg_stat_user_tables y su columna importante n_mod_since_analyze.
 Tambien llena la tabla  pg_class y columna relpages,reltuples 
 
+### 4 formas principales de ejecutar ANALYZE en PostgreSQL
+```SQL
 
+
+--- Toda la base de datos actual:
+ANALYZE;
+
+--- Una tabla específica:
+ANALYZE mi_tabla;
+
+--- Columnas específicas de una tabla(útil para tablas gigantes donde solo cambias ciertas columnas):
+ANALYZE mi_tabla (columna1, columna2);
+
+--- Con salida detallada (Verbose):
+ANALYZE VERBOSE mi_tabla;
+
+```
+
+# Consulta la cantidad de cambios
+* **`n_mod_since_analyze`**: Cantidad de modificaciones (`INSERT`, `UPDATE`, `DELETE`) registradas desde la última vez que la tabla fue analizada.
+```
+select relname,n_live_tup, n_mod_since_analyze from pg_stat_user_tables where relname = 'mi_tabla';
+```
 
 ### 2. ¿Cómo funciona internamente? (El Algoritmo)
 
@@ -211,12 +233,14 @@ ORDER BY
 Preguntaste qué cantidad o porcentaje de filas se toman para considerar que una tabla *necesita* un `ANALYZE`. El motor de PostgreSQL (específicamente el demonio `autovacuum`) no adivina, usa una ecuación matemática estricta basada en dos parámetros de configuración:
 
 **Fórmula de disparo:**
-`Umb_Base + (Factor_Escala * Filas_Vivas)`
+`Umbral = autovacuum_analyze_threshold + (autovacuum_analyze_scale_factor * tuplas_vivas)`
 
 Por defecto en PostgreSQL, estos valores son:
 
 * `autovacuum_analyze_threshold` = **50 filas** (Umb_Base)
 * `autovacuum_analyze_scale_factor` = **0.1** (10% de Factor_Escala)
+* Ejem. Tuplas vivas 100,000
+
 
 **Ejemplo táctico:**
 Si tu tabla tiene **100,000 filas vivas** (`n_live_tup`), la ecuación dice:
@@ -224,6 +248,24 @@ Si tu tabla tiene **100,000 filas vivas** (`n_live_tup`), la ecuación dice:
 
 Esto significa que cuando la columna `n_mod_since_analyze` de la consulta de Mauricio llegue a **10,050**, el motor dirá: *"¡Alerta! Llegamos al límite, disparen un Auto-Analyze de inmediato"*. En la práctica, esto equivale a esperar que cambie **un poco más del 10%** de la tabla.
 
+
+###  De forma automática (`Autovacuum / Autoanalyze`)
+
+PostgreSQL ejecuta el análisis de forma transparente según la actividad de tuplas.
+
+* Se controla mediante los parámetros del `postgresql.conf`:
+* `autovacuum = on`
+* `autovacuum_analyze_threshold = 50`
+* `autovacuum_analyze_scale_factor = 0.1`
+
+
+* Puedes forzar una agresividad diferente **por cada tabla**:
+```sql
+ALTER TABLE mi_tabla SET (
+    autovacuum_analyze_scale_factor = 0.02,
+    autovacuum_analyze_threshold = 100
+);
+```
  
 ### 🛡️ 3. La Matriz de Riesgo VANGUARD (Rangos de Salud)
 
@@ -274,7 +316,7 @@ Aquí es donde la arquitectura se pone a prueba. Si el servidor sufre un corte d
 
  
 
-### 🛡️ EL PROTOCOLO DEL GATEKEEPER (Regla Post-Crash)
+### 🛡️ ¿Qué pasa si se reinicia un servidor por algun problema?
  
 
 Este es el verdadero peligro que asusta a los DBAs novatos. Si el servidor sufre un *Hard Crash* y las estadísticas se resetean a cero, **el Autovacuum se vuelve ciego**.
@@ -310,3 +352,77 @@ Debes lanzar un análisis global a nivel de base de datos desde la terminal:
 ```
 
 *(Este comando lanza hilos en paralelo para recalcular el `ANALYZE` de todas tus tablas y reconstruir la memoria RAM forense antes de que el tráfico productivo golpee al optimizador ciego).*
+
+
+
+---
+
+ 
+### ¿Cómo funciona la toma de muestras?
+
+* **Lectura por bloques (Filas), no por columnas aisladas:** PostgreSQL no lee las columnas por separado; selecciona un número de **filas al azar** de toda la tabla (basado en el parámetro `default_statistics_target`). Una vez elegida esa muestra de filas, analiza los valores de todas sus columnas.
+* **Columnas ignoradas:** La única excepción son las columnas con tipos de datos que no tienen definidos operadores de comparación ni clases de operadores B-tree (algo muy poco común, como ciertos tipos de datos personalizados o binarios sin funciones de ordenamiento).
+ 
+
+### ¿Cuándo conviene especificar columnas?
+
+Especificar columnas (`ANALYZE mi_tabla (col1, col2);`) es una técnica de optimización útil en dos casos específicos:
+
+1. **Tablas con columnas muy pesadas (`TEXT`, `JSONB`, `BYTEA` grandes):** Analizar estas columnas requiere procesar mucha memoria (TOAST). Si solo usas esas columnas para mostrar datos y nunca en cláusulas `WHERE` o `JOIN`, puedes omitirlas analizando solo las columnas indexadas o de filtro.
+2. **Tablas con decenas o cientos de columnas:** Si solo un par de columnas reciben constantes `UPDATE` o `WHERE`, analizar la tabla completa en tablas muy grandes consume E/S de disco innecesariamente.
+
+ 
+
+### Configuración por columna
+
+Si quieres que `ANALYZE` (incluso el automático) recolecte estadísticas de todas las columnas pero con **distinto nivel de detalle**, puedes cambiar el objetivo por columna en lugar de omitirlas:
+
+```sql
+-- Hacer que solo una columna crítica recolecte más muestras
+ALTER TABLE mi_tabla ALTER COLUMN columna_critica SET STATISTICS 500;
+
+-- Reducir las muestras de una columna secundaria para que ANALYZE sea más rápido
+ALTER TABLE mi_tabla ALTER COLUMN columna_secundaria SET STATISTICS 10;
+
+```
+
+
+---
+
+
+### Analuyze vía Línea de Comandos del Sistema Operativo (`vacuumdb`)
+
+Es un ejecutable de PostgreSQL que permite correr el proceso desde la terminal de Bash/CMD sin entrar a `psql`. Ideal para **scripts de mantenimiento o crontabs**.
+
+* **En una base de datos específica:**
+```bash
+vacuumdb -z -d nombre_bd
+
+```
+
+
+* **En una sola tabla de una BD:**
+```bash
+vacuumdb -z -t mi_tabla nombre_bd
+
+```
+
+
+* **En TODAS las bases de datos del cluster:**
+```bash
+vacuumdb -z --all
+
+```
+
+
+* **En paralelo (múltiples núcleos)** *(PostgreSQL 9.5+)*:
+```bash
+vacuumdb -z -j 4 nombre_bd
+
+```
+
+*(Nota: La bandera `-z` es la equivalente a `--analyze`)*
+
+
+
+
