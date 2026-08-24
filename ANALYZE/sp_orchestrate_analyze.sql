@@ -3,6 +3,12 @@ BEGIN;
 -- DROP SCHEMA  maint;
 CREATE SCHEMA IF NOT EXISTS maint;
 
+-- =========================================================================================
+-- [FASE 1]: EXTENSIONES DEL KERNEL DE POSTGRESQL
+-- =========================================================================================
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+CREATE EXTENSION IF NOT EXISTS pg_background;
+
 -- 1. TABLA PADRE: Orquestación Global
 -- DROP TABLE IF EXISTS maint.jobs CASCADE;
 -- TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE ;
