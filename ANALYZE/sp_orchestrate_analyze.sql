@@ -129,8 +129,8 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_parallel_workers INT DEFAULT 4,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado con Vacuum)
-    p_min_rows INT DEFAULT 1000,                -- Mínimo de cambios para evaluar
-    p_force_rows INT DEFAULT 50000,             -- Filas modificadas para FORZAR entrada (NULL para desactivar)
+    p_min_chg_rows INT DEFAULT 1000,                -- Mínimo de cambios para evaluar
+    p_force_chg_rows INT DEFAULT 50000,             -- Filas modificadas para FORZAR entrada (NULL para desactivar)
     p_cutoff_time TIME DEFAULT NULL,
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
 )
@@ -250,8 +250,8 @@ BEGIN
         'profile', UPPER(p_profile),
         'parallel_workers', p_parallel_workers,
         'threshold_pct', p_threshold_pct,
-        'min_rows', p_min_rows,
-        'force_rows', p_force_rows,
+        'min_rows', p_min_chg_rows,
+        'force_rows', p_force_chg_rows,
         'cutoff_time', p_cutoff_time,
         'keep_history', p_keep_history
     );
@@ -294,9 +294,9 @@ BEGIN
           AND (
               (p_scope LIKE 'SMART%' AND (
                   mf.force_maintenance = TRUE OR (
-                      COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
+                      COALESCE(st.n_mod_since_analyze, 0) >= p_min_chg_rows AND (
                           ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100.0) >= p_threshold_pct 
-                          OR (p_force_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_rows)
+                          OR (p_force_chg_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_chg_rows)
                       )
                   )
               )) OR
