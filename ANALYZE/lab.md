@@ -132,14 +132,15 @@ ORDER BY change_pct DESC NULLS LAST;
 ------------+-----------------+-------------+-------------------+------------
  lab        | carritos        |       10000 |             10000 |     100.00
  lab        | sesiones        |       20000 |             18000 |      90.00
- lab        | clientes        |       40000 |             20400 |      51.00
  lab        | pedidos         |       20000 |              3000 |      15.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | clientes        |       20000 |               400 |       2.00
  lab        | envios          |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
+(10 rows)
 ```
 
 
@@ -170,15 +171,13 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 739947 -> lab.clientes
-INFO:      [>] LANZANDO (Fase 1) PID 739948 -> lab.sesiones
-INFO:      [>] LANZANDO (Fase 1) PID 739949 -> lab.carritos
-INFO:      [✓] EXITO (Fase 1) -> lab.clientes
+INFO:      [>] LANZANDO (Fase 1) PID 750576 -> lab.sesiones
+INFO:      [>] LANZANDO (Fase 1) PID 750577 -> lab.carritos
 INFO:      [✓] EXITO (Fase 1) -> lab.sesiones
 INFO:      [✓] EXITO (Fase 1) -> lab.carritos
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 3 / 3
-INFO:  Tiempo Total: 00:00:01.032325
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 1 | Tablas procesadas: 2 / 2
+INFO:  Tiempo Total: 00:00:01.029435
 INFO:  =========================================================
 CALL
 
@@ -206,13 +205,14 @@ ORDER BY change_pct DESC NULLS LAST;
  lab        | pedidos         |       20000 |              3000 |      15.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | clientes        |       20000 |               400 |       2.00
  lab        | pagos           |       20000 |                 0 |       0.00
- lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
  lab        | sesiones        |       20000 |                 0 |       0.00
- lab        | envios          |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
- lab        | detalle_pedidos |       20000 |                 0 |       0.00
+(10 rows)
 ```
 
 
@@ -241,11 +241,11 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 740512 -> lab.pedidos
+INFO:      [>] LANZANDO (Fase 1) PID 750656 -> lab.pedidos
 INFO:      [✓] EXITO (Fase 1) -> lab.pedidos
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.019195
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.019255
 INFO:  =========================================================
 CALL
 ```
@@ -270,18 +270,18 @@ ORDER BY change_pct DESC NULLS LAST;
 ------------+-----------------+-------------+-------------------+------------
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
- lab        | pedidos         |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |               400 |       2.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
- lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
  lab        | sesiones        |       20000 |                 0 |       0.00
- lab        | envios          |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
 ```
 
-## Ejecutar ahora los que tengan 5% , minimo 1500 filas modificadas
+## Ejecutar ahora los que tengan 5% y minimo 1500 filas modificadas
 ```
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
@@ -306,11 +306,11 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 740804 -> lab.logs_auditoria
+INFO:      [>] LANZANDO (Fase 1) PID 750733 -> lab.logs_auditoria
 INFO:      [✓] EXITO (Fase 1) -> lab.logs_auditoria
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 4 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.018665
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.019036
 INFO:  =========================================================
 CALL
 ```
@@ -334,15 +334,16 @@ ORDER BY change_pct DESC NULLS LAST;
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
  lab        | inventario      |       20000 |              1200 |       6.00
- lab        | productos       |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |               400 |       2.00
  lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | envios          |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
  lab        | sesiones        |       20000 |                 0 |       0.00
- lab        | clientes        |       20000 |                 0 |       0.00
  lab        | logs_auditoria  |       22000 |                 0 |       0.00
+ lab        | productos       |       20000 |                 0 |       0.00
+(10 rows)
 ```
 
 
