@@ -32,8 +32,10 @@ ANALYZE VERBOSE mi_tabla;
 
 # Consulta la cantidad de cambios
 * **`n_mod_since_analyze`**: Cantidad de modificaciones (`INSERT`, `UPDATE`, `DELETE`) registradas desde la última vez que la tabla fue analizada.
+obtener el porcentaje real de cambios que ha sufrido una tabla desde su último ANALYZE.<br>
+**Porcentaje** = `(n_mod_since_analyze / n_live_tup ) * 100`
 ```
-select relname,n_live_tup, n_mod_since_analyze from pg_stat_user_tables where relname = 'mi_tabla';
+select relname,n_live_tup, n_mod_since_analyze, (n_mod_since_analyze / n_live_tup ) * 100 as prc_desfase from pg_stat_user_tables where relname = 'mi_tabla';
 ```
 
 ### 2. ¿Cómo funciona internamente? (El Algoritmo)
