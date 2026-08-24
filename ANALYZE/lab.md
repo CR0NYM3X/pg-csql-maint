@@ -128,20 +128,18 @@ ORDER BY change_pct DESC NULLS LAST;
 
 **Salida esperada**
 ```
-+---------------------+-------------+-------------------+------------+
-|    nombre_tabla     | filas_vivas | filas_modificadas | change_pct |
-+---------------------+-------------+-------------------+------------+
-| lab_carritos        |       10000 |             10000 |     100.00 |
-| lab_sesiones        |       20000 |             18000 |      90.00 |
-| lab_pedidos         |       20000 |              3000 |      15.00 |
-| lab_logs_auditoria  |       22000 |              2000 |       9.09 |
-| lab_inventario      |       20000 |              1200 |       6.00 |
-| lab_clientes        |       20000 |               400 |       2.00 |
-| lab_envios          |       20000 |                 0 |       0.00 |
-| lab_pagos           |       20000 |                 0 |       0.00 |
-| lab_detalle_pedidos |       20000 |                 0 |       0.00 |
-| lab_productos       |       20000 |                 0 |       0.00 |
-+---------------------+-------------+-------------------+------------+
+ schemaname |    nombre_tabla     | filas_vivas | filas_modificadas | change_pct 
+------------+---------------------+-------------+-------------------+------------
+ lab        | carritos            |       30000 |             30000 |     100.00
+ lab        | sesiones            |       40000 |             38000 |      95.00
+ lab        | pedidos             |       40000 |             23000 |      57.50
+ lab        | inventario          |       40000 |             21200 |      53.00
+ lab        | logs_auditoria      |       42000 |             22000 |      52.38
+ lab        | clientes            |       40000 |             20400 |      51.00
+ lab        | productos           |       40000 |             20000 |      50.00
+ lab        | detalle_pedidos     |       40000 |             20000 |      50.00
+ lab        | pagos               |       40000 |             20000 |      50.00
+ lab        | envios              |       40000 |             20000 |      50.00
 ```
 
 
@@ -151,14 +149,17 @@ ORDER BY change_pct DESC NULLS LAST;
 Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enciende el modo visual (`TRUE`):
 
 ```sql
-CALL maint.sp_orchestrate_analyze(
-    p_job_type         => 'SMART',        -- Modo quirúrgico: Solo analiza lo que realmente mutó
-    p_parallel_workers => 4,              -- Fuerza bruta controlada: 4 núcleos de CPU trabajando en paralelo
-    p_verbose          => TRUE ,          -- Silencioso: Como se ejecuta en automático, para pg_cron usa false
-    p_threshold_pct    => 0.05,           -- Umbral del 5%: Solo toca la tabla si el 5% de sus datos cambiaron
-    p_min_rows         => 1000,           -- Filtro anti-morralla: Ignora tablas con menos de 1,000 cambios
-    p_cutoff_time      => '06:00:00'::TIME -- [KILL SWITCH]: Aborto automático a las 6:00 AM exactas o usa NULL para deshabilitarlo
-);
+  CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',   -- Solo tablas de usuario modificadas
+      p_profile          => 'NORMAL',       -- 1 pasada estándar
+      p_parallel_workers => 4,              -- 4 núcleos simultáneos
+      p_verbose          => true,          -- Silencioso
+      p_threshold_pct    => 51,           -- Umbral del 5% de volatilidad
+      p_min_rows         => 1000,           -- Ignora tablas con < 1000 cambios
+      p_cutoff_time      => NULL, --    Deshabilitars la hora para detener la ejecucion o puedes colocar por ejem: '06:00:00'::TIME
+      p_keep_history     => TRUE   --  Mantener los registros de este escaneo en maint.vacuum_tasks
+  ); 
+
 ```
 
 #### PASO 2: Verifica la Telemetría 
