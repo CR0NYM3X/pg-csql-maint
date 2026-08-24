@@ -169,8 +169,28 @@ SET default_statistics_target = 150;
 
 
 ---
+ 
+### Estados `maint.jobs` y `maint.analyze_tasks`
 
+#### Para la Tabla Cabecera (`maint.jobs`):
 
+* **`RUNNING`**: Orquestador en ejecución activa.
+* **`COMPLETED`**: Ejecución finalizada con 100% de recolección en tiempo real.
+* **`COMPLETED_WITH_CUTOFF`**: Orquestación finalizada por ventana de tiempo (`p_cutoff_time`).
+* **`ABORTED_ORPHAN`**: Orquestación cuyo Padre fue interrumpido (`CTRL+C` / red) y cuyos hijos terminaron en segundo plano, reconciliada en la siguiente corrida.
+* **`CANCELLED_BY_USER`**: Interrupción manual atrapada limpiamente.
+
+#### Para la Tabla de Tareas (`maint.analyze_tasks`):
+
+* **`PENDING`**: Tarea encolada en espera de trabajador.
+* **`RUNNING`**: Tarea despachada y en ejecución por un worker `pg_background`.
+* **`SUCCESS`**: Operación SQL completada exitosamente sobre la tabla.
+* **`FAILED`**: Error durante la ejecución del comando SQL sobre la tabla.
+* **`SKIPPED_TIME_LIMIT`**: Tarea omitida por alcanzar la hora límite.
+* **`ABORTED_ORPHAN`**: Tarea finalizada o abandonada en segundo plano tras la pérdida del recolector.
+ 
+
+---
 ###  `p_force_rows` para tablas gigantes
 
 El parámetro `p_force_rows` (por defecto 50,000) se diseñó para resolver el **Efecto de Ceguera por Volumen en Tablas Masivas (Very Large Databases - VLDB)**.
