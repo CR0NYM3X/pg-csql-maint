@@ -85,7 +85,7 @@ $$
       p_profile          => 'NORMAL',       -- 1 pasada estándar
       p_parallel_workers => 4,              -- 4 núcleos simultáneos
       p_verbose          => FALSE,          -- Silencioso
-      p_threshold_pct    => 0.05,           -- Umbral del 5% de volatilidad
+      p_threshold_pct    => 5.0,           -- Umbral del 5% de volatilidad
       p_min_rows         => 1000,           -- Ignora tablas con < 1000 cambios
       p_cutoff_time      => '06:00:00'::TIME, -- [KILL SWITCH] Aborto a las 6:00 AM
       p_keep_history     => FALSE           -- [HIGIENE] Purgar detalles al terminar para no ocupar espacio
@@ -148,7 +148,7 @@ CALL maint.sp_orchestrate_analyze(p_scope => 'SMART_USER');
 | `p_profile` | `VARCHAR` | `'NORMAL'` | `'NORMAL'` para uso diario. `'PRELOAD'` para recuperación de emergencia en 3 fases estadísticas. |
 | `p_parallel_workers` | `INT` | `4` | Nivel de concurrencia. Número de tablas analizadas simultáneamente. |
 | `p_verbose` | `BOOLEAN` | `FALSE` | Modo Diagnóstico. Si es `TRUE`, imprime logs en tiempo real. Usar solo en consolas interactivas (DBeaver/pgAdmin). |
-| `p_threshold_pct` | `NUMERIC` | `0.05` | *(Aplica a SMART)* Porcentaje mínimo de filas modificadas respecto al total (0.05 = 5%). |
+| `p_threshold_pct` | `NUMERIC` | `5.0` | *(Aplica a SMART)* Porcentaje mínimo de filas modificadas respecto al total. |
 | `p_min_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad absoluta mínima de modificaciones para considerar la tabla. |
 | `p_cutoff_time` | `TIME` | `NULL` | **Kill Switch.** Hora militar tope. Si se supera, aborta las tareas encoladas limpiamente. |
 | `p_keep_history` | `BOOLEAN` | `TRUE` | **Purga Efímera.** `TRUE` conserva el detalle del job en `analyze_tasks`. `FALSE` elimina los registros detallados al finalizar, previniendo el *bloat* del orquestador. (La tabla `jobs` nunca se borra). |
