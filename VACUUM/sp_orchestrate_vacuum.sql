@@ -25,17 +25,23 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos
 -- =========================================================================================
+-- 1. Crear la tabla maestra de control con soporte para Orchestrator PID y Parámetros Universal JSONB
 CREATE TABLE IF NOT EXISTS maint.jobs (
-    job_id SERIAL PRIMARY KEY,                                 
-    job_type VARCHAR(50) NOT NULL,                             
-    maintenance_action VARCHAR(20) NOT NULL,                   
-    threshold_pct NUMERIC DEFAULT 0.05,                        
-    parallel_workers INT NOT NULL,                             
-    tables_processed INT NOT NULL DEFAULT 0,                   
-    status VARCHAR(30) DEFAULT 'INITIALIZING',                 
-    started_at TIMESTAMPTZ DEFAULT clock_timestamp(),          
-    ended_at TIMESTAMPTZ                                       
+    job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    job_type VARCHAR(50) NOT NULL,              -- Ej. 'SMART_USER_NORMAL', 'ALL_USER_PRELOAD'
+    maintenance_action VARCHAR(20) NOT NULL,    -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
+    orchestrator_pid INT NOT NULL,              -- PID del proceso principal (Padre) para Self-Healing de 2 niveles
+    execution_params JSONB NOT NULL,             -- Fotografía inmutable de los 8/9 parámetros de la invocación
+    status VARCHAR(30) NOT NULL DEFAULT 'RUNNING',-- 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_CUTOFF', 'ABORTED_ORPHAN', 'CANCELLED_BY_USER'
+    tables_processed INT DEFAULT 0,             -- Cantidad real de tablas intervenidas exitosamente
+    started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    ended_at TIMESTAMPTZ                        -- Sello de tiempo final cuando concluye o se reconcilia
 );
+
+-- 2. Índice táctico para acelerar la auto-sanación de Jobs colgados al inicio de cada ejecución
+CREATE INDEX IF NOT EXISTS idx_jobs_status_action 
+ON maint.jobs (status, maintenance_action) 
+WHERE status = 'RUNNING';
 
 COMMENT ON TABLE maint.jobs IS 'Cabecera maestra que almacena el estado global, parámetros de ejecución y métricas de cada ciclo de orquestación.';
 COMMENT ON COLUMN maint.jobs.job_id IS 'Identificador único secuencial del trabajo maestro de mantenimiento.';
@@ -156,30 +162,29 @@ ON maint.vacuum_tasks (job_id, status, task_id);
 ========================================================================================= */
 -- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_vacuum(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, INT);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
-    p_scope VARCHAR DEFAULT 'SMART_USER',
-    p_profile VARCHAR DEFAULT 'BALANCED',
+    p_scope VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM'
+    p_profile VARCHAR DEFAULT 'BALANCED',        -- 'LIGHT', 'BALANCED', 'AGGRESSIVE'
     p_parallel_workers INT DEFAULT 4,
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
-    p_threshold_pct NUMERIC DEFAULT 5.00,
-    p_min_dead_tup INT DEFAULT 5000,
-    p_keep_history BOOLEAN DEFAULT TRUE -- [NUEVO] TRUE = Conserva auditoría; FALSE = Purga detalles al terminar
+    p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado con Analyze)
+    p_min_dead_rows INT DEFAULT 5000,            -- Mínimo de tuplas muertas para evaluar
+    p_force_dead_rows INT DEFAULT 50000,         -- Tuplas muertas para FORZAR entrada (NULL para desactivar)
+    p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Purga detalles al terminar
 )
 LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id INT; v_task_id INT; v_schema TEXT; v_table TEXT; v_child_pid INT;
-    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT; 
+    v_active_workers INT; v_pending_tasks INT; v_total_tasks INT := 0; 
     v_raw_sql TEXT; v_options_str TEXT;
-    r_finished RECORD; v_last_job_id INT;
-    v_success_count INT := 0; 
+    v_start_time TIMESTAMPTZ := clock_timestamp(); r_finished RECORD;
+    v_success_count INT := 0;
     
-    -- [AGREGADO] Cronómetro de ejecución
-    v_start_time TIMESTAMPTZ := clock_timestamp();
-    
-    -- Variables para leer la configuración del perfil
+    -- Variables para lectura de perfil dinámico y telemetría
     r_profile RECORD;
+    v_execution_params JSONB;
 
-    -- Variables para interceptar SETs locales y transmitirlos a los workers
+    -- Variables para interceptar SETs locales y transmitirlos a los workers (TU LÓGICA INTACTA)
     v_param RECORD;
     v_changed_params TEXT[] := '{}';
 BEGIN
@@ -187,7 +192,7 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
     -- =====================================================================
-    -- INTERCEPCIÓN DE PARÁMETROS DE SESIÓN AL INICIO (UNA SOLA VEZ)
+    -- INTERCEPCIÓN DE PARÁMETROS DE SESIÓN AL INICIO (LÓGICA CLIENTE RESERVADA)
     -- =====================================================================
     FOR v_param IN (
         SELECT name, setting 
@@ -204,24 +209,107 @@ BEGIN
     END IF;
     -- =====================================================================
 
-    -- VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
+    -- 1-A. VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
     SELECT * INTO r_profile FROM maint.vacuum_profiles WHERE UPPER(profile_name) = UPPER(p_profile);
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'CRÍTICO: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
+        RAISE EXCEPTION 'CRITICO: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
     END IF;
-    
-    INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
-    VALUES (p_scope || '_' || UPPER(p_profile), 'VACUUM', p_threshold_pct, p_parallel_workers, 'RUNNING') RETURNING job_id INTO v_job_id;
+
+    -- 1-B. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL DE JOBS Y WORKERS HUÉRFANOS
+    -- Paso A: Identificar Jobs cuyo Padre murió Y cuyos Hijos ya no están activos en pg_stat_activity
+    WITH dead_parent_jobs AS (
+        SELECT j.job_id 
+        FROM maint.jobs j
+        WHERE j.status = 'RUNNING' 
+          AND j.maintenance_action = 'VACUUM'
+          -- CANDADO DE PADRE: Valida PID + Firma de Código + Estado Activo (Compatible con pg_cron y CLI)
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_stat_activity a 
+              WHERE a.pid = j.orchestrator_pid 
+                AND a.query ILIKE '%sp_orchestrate_vacuum%'
+                AND a.state != 'idle'
+          )
+          -- CANDADO DE HIJOS: Valida que no queden trabajadores pg_background procesando tareas de vacuum
+          AND NOT EXISTS (
+              SELECT 1 FROM maint.vacuum_tasks t
+              JOIN pg_stat_activity a ON a.pid = t.child_pid
+              WHERE t.job_id = j.job_id 
+                AND t.status = 'RUNNING'
+                AND a.backend_type = 'pg_background'
+                AND a.query ILIKE 'VACUUM %'
+          )
+    )
+    -- Actualizar tareas congeladas de Jobs huérfanos
+    UPDATE maint.vacuum_tasks 
+    SET status = 'ABORTED_ORPHAN', 
+        ended_at = clock_timestamp(),
+        error_log = 'Orchestrator process died. Task completed or abandoned without live collector.'
+    WHERE status IN ('PENDING', 'RUNNING')
+      AND job_id IN (SELECT job_id FROM dead_parent_jobs);
+
+    -- Paso B: Cerrar y adjudicar el estado final en el Job Padre
+    WITH dead_parent_jobs AS (
+        SELECT j.job_id 
+        FROM maint.jobs j
+        WHERE j.status = 'RUNNING' 
+          AND j.maintenance_action = 'VACUUM'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_stat_activity a 
+              WHERE a.pid = j.orchestrator_pid 
+                AND a.query ILIKE '%sp_orchestrate_vacuum%'
+                AND a.state != 'idle'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM maint.vacuum_tasks t
+              JOIN pg_stat_activity a ON a.pid = t.child_pid
+              WHERE t.job_id = j.job_id 
+                AND t.status = 'RUNNING'
+                AND a.backend_type = 'pg_background'
+                AND a.query ILIKE 'VACUUM %'
+          )
+    )
+    UPDATE maint.jobs 
+    SET status = 'ABORTED_ORPHAN', 
+        ended_at = clock_timestamp(),
+        tables_processed = (
+            SELECT COUNT(*) FROM maint.vacuum_tasks 
+            WHERE job_id = maint.jobs.job_id AND status = 'SUCCESS'
+        )
+    WHERE job_id IN (SELECT job_id FROM dead_parent_jobs);
+
     COMMIT;
 
-    SELECT MAX(job_id) INTO v_last_job_id FROM maint.jobs WHERE job_type = (p_scope || '_' || UPPER(p_profile)) AND maintenance_action = 'VACUUM' AND job_id < v_job_id;
+    IF p_verbose THEN
+        RAISE INFO '=========================================================';
+        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD';
+        RAISE INFO 'ALCANCE: % | PERFIL: % | HILOS: % | CUTOFF: % | HISTORIAL: %', 
+                   p_scope, UPPER(p_profile), p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_keep_history;
+        RAISE INFO '=========================================================';
+    END IF;
 
-    -- Triage de Tareas (Lógica inalterada)
+    -- 2. Embalar parámetros para almacenamiento dinámico en maint.jobs (JSONB)
+    v_execution_params := jsonb_build_object(
+        'scope', p_scope,
+        'profile', UPPER(p_profile),
+        'parallel_workers', p_parallel_workers,
+        'threshold_pct', p_threshold_pct,
+        'min_dead_tup', p_min_dead_rows,
+        'force_dead_tup', p_force_dead_rows,
+        'cutoff_time', p_cutoff_time,
+        'keep_history', p_keep_history
+    );
+
+    -- Crear Job Padre registrando el PID actual (pg_backend_pid) y el esquema universal JSONB
+    INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
+    VALUES (p_scope || '_' || UPPER(p_profile), 'VACUUM', pg_backend_pid(), v_execution_params, 'RUNNING')
+    RETURNING job_id INTO v_job_id;
+    COMMIT;
+
+    -- 3. POBLAR COLA DE TAREAS (TRIAGE CON BYPASS VIP Y FILTRO DE FUERZA BRUTA)
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
            ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
     FROM pg_stat_all_tables st
-    LEFT JOIN maint.vacuum_tasks prev_t ON prev_t.job_id = v_last_job_id AND prev_t.schema_name = st.schemaname AND prev_t.table_name = st.relname
     LEFT JOIN LATERAL (
         SELECT is_ignored, force_maintenance 
         FROM maint.filters f 
@@ -229,7 +317,8 @@ BEGIN
           AND f.maintenance_action IN ('ALL', 'VACUUM')
         ORDER BY CASE WHEN f.maintenance_action = 'VACUUM' THEN 1 ELSE 2 END ASC LIMIT 1
     ) mf ON TRUE
-    WHERE st.schemaname <> 'pg_toast' AND COALESCE(mf.is_ignored, FALSE) = FALSE
+    WHERE st.schemaname <> 'pg_toast' 
+      AND COALESCE(mf.is_ignored, FALSE) = FALSE
       AND (
           (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
           (p_scope IN ('SMART_USER', 'ALL_USER') AND st.schemaname NOT IN ('pg_catalog', 'information_schema')) OR
@@ -237,26 +326,33 @@ BEGIN
           (p_scope = 'ALL_SYSTEM' AND st.schemaname IN ('pg_catalog', 'information_schema'))
       )
       AND (
-          (p_scope LIKE 'SMART%' AND st.n_dead_tup >= p_min_dead_tup AND ( (st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0) ) >= (p_threshold_pct / 100.0) OR st.n_dead_tup >= 100000)) OR
+          (p_scope LIKE 'SMART%' AND (
+              mf.force_maintenance = TRUE OR (
+                  st.n_dead_tup >= p_min_dead_rows AND (
+                      ((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100.0) >= p_threshold_pct
+                      OR (p_force_dead_rows IS NOT NULL AND st.n_dead_tup >= p_force_dead_rows)
+                  )
+              )
+          )) OR
           (p_scope NOT LIKE 'SMART%')
       )
-    ORDER BY CASE WHEN prev_t.status = 'SKIPPED_TIME_LIMIT' THEN 0 ELSE 1 END ASC, COALESCE(st.last_vacuum, '1970-01-01'::timestamptz) ASC, st.n_dead_tup DESC;
+    ORDER BY COALESCE(st.n_dead_tup, 0) DESC, st.n_live_tup DESC;
     COMMIT;
 
     SELECT COUNT(*) INTO v_total_tasks FROM maint.vacuum_tasks WHERE job_id = v_job_id;
-    
-    -- SALIDA TEMPRANA (Sin candidatas)
+
+    -- SALIDA TEMPRANA (Sistema óptimo sin candidatas)
     IF v_total_tasks = 0 THEN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
         
         IF p_verbose THEN 
             RAISE INFO '---------------------------------------------------------';
-            RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: 0 / 0 (Sin tablas candidatas)', v_job_id;
-            RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+            RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema optimo)', v_job_id;
+            RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
             RAISE INFO '=========================================================';
         END IF;
-        
-        -- Restos de limpieza de rol si no hubo tareas a procesar
+
+        -- Limpieza de rol si no hubo tareas a procesar (LÓGICA CLIENTE RESERVADA)
         IF array_length(v_changed_params, 1) > 0 THEN
             FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
                 EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]);
@@ -266,9 +362,7 @@ BEGIN
         COMMIT; RETURN;
     END IF;
 
-    -- =====================================================================
-    -- ENSAMBLADOR SEGURO DE LA SINTAXIS VACUUM (Zero SQLi)
-    -- =====================================================================
+    -- 4. ENSAMBLADOR DE OPCIONES NATIVAS DE VACUUM (Cero SQLi)
     v_options_str := '';
     IF r_profile.skip_locked THEN v_options_str := v_options_str || 'SKIP_LOCKED ON, '; END IF;
     IF r_profile.is_analyze THEN v_options_str := v_options_str || 'ANALYZE ON, '; END IF;
@@ -281,42 +375,61 @@ BEGIN
     IF r_profile.parallel_workers > 0 THEN 
         v_options_str := v_options_str || ', PARALLEL ' || r_profile.parallel_workers; 
     END IF;
-    -- =====================================================================
 
+    -- 5. BUCLE DE DESPACHO ASÍNCRONO
     LOOP
-        FOR r_finished IN (SELECT task_id, child_pid, schema_name, table_name FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'RUNNING' AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')) LOOP
+        -- A. RECOLECTOR FORENSE (Preserva child_pid inmutable para auditoría)
+        FOR r_finished IN 
+            SELECT task_id, child_pid, schema_name, table_name FROM maint.vacuum_tasks 
+            WHERE job_id = v_job_id AND status = 'RUNNING' 
+              AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')
+        LOOP
             BEGIN
-                PERFORM * FROM public.pg_background_result(r_finished.child_pid) AS (result TEXT);
-                UPDATE maint.vacuum_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
+                PERFORM * FROM public.pg_background_result(r_finished.child_pid::INT) AS (result TEXT);
+
+                -- Se conserva child_pid intacto para trazabilidad PCI-DSS / ISO 27001
+                UPDATE maint.vacuum_tasks SET status = 'SUCCESS', ended_at = clock_timestamp() WHERE task_id = r_finished.task_id;
                 v_success_count := v_success_count + 1; 
-                IF p_verbose THEN RAISE INFO '    [✓] TAREA COMPLETADA -> %.%', r_finished.schema_name, r_finished.table_name; END IF;
+                IF p_verbose THEN RAISE INFO '    [✓] EXITO -> %.%', r_finished.schema_name, r_finished.table_name; END IF;
             EXCEPTION WHEN OTHERS THEN
-                UPDATE maint.vacuum_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM, child_pid = NULL WHERE task_id = r_finished.task_id;
-                IF p_verbose THEN RAISE WARNING '    [X] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
+                UPDATE maint.vacuum_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM WHERE task_id = r_finished.task_id;
+                IF p_verbose THEN RAISE WARNING '    [ERROR] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
             END;
             COMMIT; 
         END LOOP;
 
+        -- B. FRENO DE EMERGENCIA (KILL-SWITCH POR TIEMPO)
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
-            UPDATE maint.vacuum_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time' WHERE job_id = v_job_id AND status = 'PENDING'; COMMIT;
+            UPDATE maint.vacuum_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' 
+            WHERE job_id = v_job_id AND status = 'PENDING'; 
+            COMMIT;
         END IF;
 
+        -- C. EVALUACIÓN DE ESTADO
         SELECT COUNT(*) INTO v_active_workers FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'RUNNING';
         SELECT COUNT(*) INTO v_pending_tasks FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'PENDING';
         
         IF v_active_workers = 0 AND v_pending_tasks = 0 THEN EXIT; END IF;
 
+        -- D. DESPACHADOR DE TAREAS
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
-            SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY task_id ASC LIMIT 1;
+            
+            SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table 
+            FROM maint.vacuum_tasks 
+            WHERE job_id = v_job_id AND status = 'PENDING' 
+            ORDER BY task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
-                UPDATE maint.vacuum_tasks SET status = 'RUNNING', started_at = clock_timestamp() WHERE task_id = v_task_id; COMMIT;
+                UPDATE maint.vacuum_tasks SET status = 'RUNNING', started_at = clock_timestamp() WHERE task_id = v_task_id; 
+                COMMIT;
 
+                -- Construcción de la sentencia SQL de VACUUM
                 v_raw_sql := format('VACUUM (%s) %I.%I;', v_options_str, v_schema, v_table);
 
                 v_child_pid := public.pg_background_launch(v_raw_sql);
-                UPDATE maint.vacuum_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; COMMIT;
+                UPDATE maint.vacuum_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; 
+                COMMIT;
                 
                 IF p_verbose THEN RAISE INFO '    [>] LANZANDO [%] PID % -> %.%', UPPER(p_profile), v_child_pid, v_schema, v_table; END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
@@ -325,23 +438,21 @@ BEGIN
         PERFORM pg_sleep(1);
     END LOOP;
 
-    -- CIERRE DE ESTADO DE JOB
+    -- 6. CIERRE NORMAL DE JOB
     IF EXISTS (SELECT 1 FROM maint.vacuum_tasks WHERE job_id = v_job_id AND status = 'SKIPPED_TIME_LIMIT') THEN
         UPDATE maint.jobs SET status = 'COMPLETED_WITH_CUTOFF', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     ELSE
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     END IF;
 
-    -- =====================================================================
-    -- [NUEVO] PURGA OPCIONAL DE LA COLA DE TAREAS (Modo Higiénico)
-    -- =====================================================================
+    -- Purga de la cola de tareas si no se desea retener el historial
     IF NOT p_keep_history THEN
         DELETE FROM maint.vacuum_tasks WHERE job_id = v_job_id;
-        IF p_verbose THEN RAISE INFO '[🧹] Purga ejecutada: Registros de maint.vacuum_tasks eliminados para el Job %.', v_job_id; END IF;
+        IF p_verbose THEN RAISE INFO '[PURGE] Purga ejecutada: Registros de maint.vacuum_tasks eliminados para el Job %.', v_job_id; END IF;
     END IF;
 
     -- =====================================================================
-    -- LIMPIEZA DEL ROL AL FINALIZAR TODA LA ORQUESTACIÓN
+    -- LIMPIEZA DEL ROL AL FINALIZAR TODA LA ORQUESTACIÓN (LÓGICA CLIENTE RESERVADA)
     -- =====================================================================
     IF array_length(v_changed_params, 1) > 0 THEN
         FOR i IN 1 .. array_length(v_changed_params, 1) LOOP
@@ -351,11 +462,10 @@ BEGIN
 
     COMMIT;
 
-    -- [NUEVO] REPORTE DE BANNER FINAL HOMOLOGADO
     IF p_verbose THEN 
         RAISE INFO '---------------------------------------------------------';
-        RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
-        RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+        RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
+        RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
         RAISE INFO '=========================================================';
     END IF;
 END;
