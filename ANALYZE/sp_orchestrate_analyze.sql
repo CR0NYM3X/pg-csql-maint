@@ -7,15 +7,14 @@ CREATE SCHEMA IF NOT EXISTS maint;
 -- DROP TABLE IF EXISTS maint.jobs CASCADE;
 -- TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE ;
 CREATE TABLE IF NOT EXISTS maint.jobs (
-    job_id SERIAL PRIMARY KEY,                                 -- Identificador único secuencial del trabajo maestro de mantenimiento.
-    job_type VARCHAR(50) NOT NULL,                             -- Tipo de trabajo y modo (ej. 'SMART', 'ALL', 'PRELOAD', 'SMART_USER_BALANCED').
-    maintenance_action VARCHAR(20) NOT NULL DEFAULT 'ANALYZE', -- Acción core ejecutada ('ANALYZE' o 'VACUUM').
-    threshold_pct NUMERIC DEFAULT 0.05,                        -- Umbral porcentual de cambio/basura utilizado para la selección.
-    parallel_workers INT NOT NULL,                             -- Concurrencia máxima de hilos paralelos configurados.
-    tables_processed INT NOT NULL DEFAULT 0,                   -- [Métrica RAM O(1)] Total de tablas completadas exitosamente en el trabajo.
-    status VARCHAR(30) DEFAULT 'INITIALIZING',                 -- Estado del Job (INITIALIZING, RUNNING, COMPLETED, COMPLETED_WITH_CUTOFF).
-    started_at TIMESTAMPTZ DEFAULT clock_timestamp(),          -- Marca de tiempo de inicio del orquestador.
-    ended_at TIMESTAMPTZ                                       -- Marca de tiempo de finalización global del orquestador.
+    job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    job_type VARCHAR(50) NOT NULL,
+    maintenance_action VARCHAR(20) NOT NULL, -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
+    execution_params JSONB NOT NULL,          -- Registro universal de parámetros en formato JSONB
+    status VARCHAR(30) NOT NULL DEFAULT 'RUNNING',
+    tables_processed INT DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    ended_at TIMESTAMPTZ
 );
 
 -- 3. ÍNDICE DE HERENCIA Y RENDIMIENTO
@@ -124,8 +123,8 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_verbose BOOLEAN DEFAULT FALSE,
     p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado con Vacuum)
     p_min_rows INT DEFAULT 1000,                -- Mínimo de cambios para evaluar
-    p_force_rows INT DEFAULT 50000,             -- Filas modificadas para FORZAR analyze (NULL para desactivar)
-    p_cutoff_time TIME DEFAULT NULL,            -- puedes usarlo asi '06:00:00'::TIME
+    p_force_rows INT DEFAULT 50000,             -- Filas modificadas para FORZAR entrada (NULL para desactivar)
+    p_cutoff_time TIME DEFAULT NULL,
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
 )
 LANGUAGE plpgsql AS $$
@@ -140,6 +139,7 @@ DECLARE
     v_set_prefix TEXT := '';
     v_target_stat INT;
     v_param RECORD;
+    v_execution_params JSONB;
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
@@ -148,16 +148,21 @@ BEGIN
     IF UPPER(p_profile) = 'PRELOAD' THEN 
         v_max_stages := 3; 
     ELSIF UPPER(p_profile) <> 'NORMAL' THEN
-        RAISE EXCEPTION 'CRÍTICO: El perfil "%" no es válido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
+        RAISE EXCEPTION 'CRITICO: El perfil "%" no es valido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
     END IF;
 
-    -- 2. Intercepta SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
+    -- 2. Interceptar SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
+    -- Se incluye default_statistics_target, pero se excluye de v_set_prefix si el perfil es PRELOAD
     FOR v_param IN (
         SELECT name, setting 
         FROM pg_settings 
-        WHERE name IN ('maintenance_work_mem', 'vacuum_cost_delay', 'vacuum_buffer_usage_limit')
+        WHERE name IN ('maintenance_work_mem', 'vacuum_cost_delay', 'vacuum_buffer_usage_limit', 'default_statistics_target')
           AND setting IS DISTINCT FROM reset_val
     ) LOOP
+        IF UPPER(p_profile) = 'PRELOAD' AND v_param.name = 'default_statistics_target' THEN
+            CONTINUE; -- PRELOAD administra su propia escalera de targets dinámicos por fase
+        END IF;
+        
         v_set_prefix := v_set_prefix || format('SET %I = %L; ', v_param.name, v_param.setting);
     END LOOP;
 
@@ -165,13 +170,25 @@ BEGIN
         RAISE INFO '=========================================================';
         RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD';
         RAISE INFO 'ALCANCE: % | PERFIL: % | HILOS: % | FASES: % | CUTOFF: % | HISTORIAL: %', 
-                   p_scope, UPPER(p_profile), p_parallel_workers, v_max_stages, COALESCE(p_cutoff_time::TEXT, 'SIN LÍMITE'), p_keep_history;
+                   p_scope, UPPER(p_profile), p_parallel_workers, v_max_stages, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_keep_history;
         RAISE INFO '=========================================================';
     END IF;
 
-    -- 3. Crear Job Padre
-    INSERT INTO maint.jobs (job_type, maintenance_action, threshold_pct, parallel_workers, status)
-    VALUES (p_scope || '_' || UPPER(p_profile), 'ANALYZE', p_threshold_pct, p_parallel_workers, 'RUNNING')
+    -- 3. Embalar parámetros para almacenamiento dinámico en maint.jobs (JSONB)
+    v_execution_params := jsonb_build_object(
+        'scope', p_scope,
+        'profile', UPPER(p_profile),
+        'parallel_workers', p_parallel_workers,
+        'threshold_pct', p_threshold_pct,
+        'min_rows', p_min_rows,
+        'force_rows', p_force_rows,
+        'cutoff_time', p_cutoff_time,
+        'keep_history', p_keep_history
+    );
+
+    -- Crear Job Padre con registro universal JSONB
+    INSERT INTO maint.jobs (job_type, maintenance_action, execution_params, status)
+    VALUES (p_scope || '_' || UPPER(p_profile), 'ANALYZE', v_execution_params, 'RUNNING')
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
@@ -208,7 +225,7 @@ BEGIN
               (p_scope LIKE 'SMART%' AND (
                   mf.force_maintenance = TRUE OR (
                       COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
-                          ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) ) >= (p_threshold_pct / 100 )
+                          ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100.0) >= p_threshold_pct 
                           OR (p_force_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_rows)
                       )
                   )
@@ -223,8 +240,8 @@ BEGIN
         IF v_current_stage = 1 AND v_total_tasks = 0 THEN
             IF p_verbose THEN 
                 RAISE INFO '---------------------------------------------------------';
-                RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema óptimo)', v_job_id;
-                RAISE INFO '⏱️  Tiempo Total: %', (clock_timestamp() - v_start_time);
+                RAISE INFO '[OK] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema optimo)', v_job_id;
+                RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
                 RAISE INFO '=========================================================';
             END IF;
             UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
@@ -244,10 +261,10 @@ BEGIN
 
                     UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1;
-                    IF p_verbose THEN RAISE INFO '    [✓] ÉXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
+                    IF p_verbose THEN RAISE INFO '    [OK] EXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
                 EXCEPTION WHEN OTHERS THEN
                     UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM, child_pid = NULL WHERE task_id = r_finished.task_id;
-                    IF p_verbose THEN RAISE WARNING '    [X] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
+                    IF p_verbose THEN RAISE WARNING '    [ERROR] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
                 END;
                 COMMIT;
             END LOOP;
@@ -294,7 +311,7 @@ BEGIN
                     UPDATE maint.analyze_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id;
                     COMMIT;
 
-                    IF p_verbose THEN RAISE INFO '    [>] LANZANDO (Fase %) PID % -> %.%', v_current_stage, v_child_pid, v_schema, v_table; END IF;
+                    IF p_verbose THEN RAISE INFO '    [RUN] LANZANDO (Fase %) PID % -> %.%', v_current_stage, v_child_pid, v_schema, v_table; END IF;
                     v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
                 END IF;
             END LOOP;
@@ -302,7 +319,7 @@ BEGIN
         END LOOP;
 
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
-            IF p_verbose THEN RAISE WARNING '[!] Ventana de mantenimiento excedida. Abortando fases restantes.'; END IF;
+            IF p_verbose THEN RAISE WARNING '[ABORT] Ventana de mantenimiento excedida. Abortando fases restantes.'; END IF;
             EXIT; 
         END IF;
 
@@ -319,20 +336,19 @@ BEGIN
     -- Purga de la cola de tareas si el DBA no desea almacenar el historial de tareas
     IF NOT p_keep_history THEN
         DELETE FROM maint.analyze_tasks WHERE job_id = v_job_id;
-        IF p_verbose THEN RAISE INFO '[ - ] Purga ejecutada: Registros de maint.analyze_tasks eliminados para el Job %.', v_job_id; END IF;
+        IF p_verbose THEN RAISE INFO '[PURGE] Purga ejecutada: Registros de maint.analyze_tasks eliminados para el Job %.', v_job_id; END IF;
     END IF;
 
     COMMIT;
 
     IF p_verbose THEN
         RAISE INFO '---------------------------------------------------------';
-        RAISE INFO '[✓] ORQUESTACIÓN FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
-        RAISE INFO '  Tiempo Total: %', (clock_timestamp() - v_start_time);
+        RAISE INFO '[OK] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
+        RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
         RAISE INFO '=========================================================';
     END IF;
 END;
 $$;
-
 
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_analyze FROM PUBLIC;
 
