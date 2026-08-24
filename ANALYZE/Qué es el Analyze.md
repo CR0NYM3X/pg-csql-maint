@@ -110,10 +110,81 @@ El `ANALYZE` es tu francotirador. No se dispara contra paredes (tablas estática
 ----
 # Preguntas frecuentes : 
 
+# Donde se guardan los datos de las estadisticas
+
+Para entender cómo se organizan, PostgreSQL usa dos vistas/tablas principales para manejar esta información:
+
+ 
+### 1. `pg_statistic` (Tabla del catálogo interno)
+
+Es la **tabla física real** donde el proceso `ANALYZE` almacena los datos de las muestras.
+
+* **Permisos restringidos:** Contiene información detallada sobre los datos reales almacenados en las columnas (valores más comunes, rangos, etc.). Por razones de seguridad y privacidad, **solo los superusuarios pueden leerla directamente**.
+
+
+### 2. `pg_stats` (Vista pública y legible)
+
+Como `pg_statistic` guarda los datos en un formato binario complejo y restringido, PostgreSQL provee la vista **`pg_stats`**.
+
+* **Acceso seguro:** Muestra la misma información de `pg_statistic` pero decodificada, legible en texto plano y filtrada respetando los permisos de seguridad (cada usuario solo ve las estadísticas de las tablas a las que tiene acceso).
+* **Campos que puedes consultar:**
+* **`tablename` / `attname**`: Nombre de la tabla y la columna.
+* **`null_frac`**: Porcentaje de valores nulos.
+* **`n_distinct`**: Estimación del número de valores distintos.
+* **`most_common_vals`**: Lista con los valores más frecuentes.
+* **`histogram_bounds`**: Histograma para dividir la distribución de los datos.
 
 
 
-## **¿Por qué ANALYZE no tarda 1,000 veces más en una tabla de 10 TB que en una de 10 GB en PostgreSQL?**
+```sql
+-- Ejemplo para consultar las estadísticas procesadas de una columna:
+SELECT 
+    tablename, 
+    attname, 
+    null_frac, 
+    n_distinct, 
+    most_common_vals 
+FROM pg_stats 
+WHERE tablename = 'tu_tabla';
+
+```
+
+
+## pg_stat vs pg_stat_tmp
+
+Esos directorios del disco no contienen las estadísticas de datos que usa el optimizador (como `pg_statistic`), sino las **estadísticas de actividad y rendimiento del motor en tiempo real**.
+
+Ahí es donde PostgreSQL rastrea en tiempo ejecuciones de consultas, lectura de bloques en memoria, cantidad de transacciones, uso de tablas y actividad de los procesos.
+
+ 
+### Diferencia entre los directorios
+
+| Directorio | Propósito y Contenido |
+| --- | --- |
+| **`pg_stat`** | **Almacenamiento permanente en disco.** Guarda el estado acumulado de las estadísticas de actividad antes de que el servidor se apague limpiamente. Al iniciar la base de datos, el motor lee los archivos de `pg_stat` para restaurar los contadores históricos de rendimiento. |
+| **`pg_stat_tmp`** | **Almacenamiento temporal en memoria/RAM.** Es la ubicación donde el recolector de estadísticas (*stats collector*) escribe continuamente el estado en vivo del motor mientras PostgreSQL está encendido. Usar un directorio temporal evita sobrecargar de escrituras el disco principal. |
+ 
+
+### ¿Qué información se maneja ahí adentro?
+
+Esos archivos son la fuente de datos que alimenta a todas las vistas del sistema que empiezan por `pg_stat_*`, como:
+
+* **`pg_stat_activity`**: Qué consultas se están ejecutando en este segundo y qué usuarios están conectados.
+* **`pg_stat_user_tables`**: Cuántos `INSERT`, `UPDATE` o `DELETE` han ocurrido, además del contador `n_mod_since_analyze`.
+* **`pg_stat_database`**: Número de transacciones *committed* o *rolled back*, e índice de aciertos en memoria caché (*buffer hit ratio*).
+* **`pg_stat_progress_analyze` / `pg_stat_progress_vacuum**`: Progreso en tiempo real de mantenimientos en ejecución.
+ 
+### Cambio importante a partir de PostgreSQL 15
+
+Históricamente, el hilo de estadísticas escribía archivos de texto/binarios constantemente en `pg_stat_tmp`. Sin embargo, a partir de **PostgreSQL 15**, el motor **eliminó por completo el uso del directorio `pg_stat_tmp**`.
+
+Ahora PostgreSQL guarda las estadísticas de actividad en vivo directamente en **memoria compartida (Shared Memory)**. Esto redujo drásticamente el uso de E/S de disco y aceleró el acceso a las vistas `pg_stat_*`. El directorio `pg_stat` en disco solo se utiliza durante los apagados limpios para persistir los contadores.
+
+
+
+
+
+# **¿Por qué ANALYZE no tarda 1,000 veces más en una tabla de 10 TB que en una de 10 GB en PostgreSQL?**
 
 No, no tarda lo mismo, pero tampoco tarda proporcionalmente  1,000 veces más.  
  
@@ -318,9 +389,8 @@ Aquí es donde la arquitectura se pone a prueba. Si el servidor sufre un corte d
 
  
 
-### 🛡️ ¿Qué pasa si se reinicia un servidor por algun problema?
+### 🛡️ Que hace antes un reinicio forzado
  
-
 Este es el verdadero peligro que asusta a los DBAs novatos. Si el servidor sufre un *Hard Crash* y las estadísticas se resetean a cero, **el Autovacuum se vuelve ciego**.
 
 Imagina que una tabla tuya tenía 5 millones de modificaciones y estaba a punto de activar el Autovacuum. Se va la luz, el servidor reinicia, y el contador vuelve a cero. El motor ahora cree que esa tabla está "limpia" y no la va a analizar hasta que acumule otros 5 millones de modificaciones nuevas. Tu optimizador tomará decisiones desastrosas.
@@ -328,7 +398,7 @@ Imagina que una tabla tuya tenía 5 millones de modificaciones y estaba a punto 
 **La Regla de Fuego VANGUARD:**
 Si tu servidor sufre una caída abrupta o un *Hard Crash*, la primera orden táctica antes de abrir las conexiones a los usuarios es forzar la reconstrucción del mapa estadístico.
 
-Debes lanzar un análisis global a nivel de base de datos desde la terminal:
+Debes lanzar un análisis llamado  ANALYZE STAGES a nivel de base de datos desde la terminal:
 
 ```bash
 ### Ejecuta el mantenimiento ANALYZE STAGES
@@ -425,6 +495,56 @@ vacuumdb -z -j 4 nombre_bd
 
 *(Nota: La bandera `-z` es la equivalente a `--analyze`)*
 
+---
 
+#  **ANALYZE en etapas (*Analyze-in-Stages*)**
+El patrón **ANALYZE en etapas (*Analyze-in-Stages*)** es una estrategia utilizada principalmente en **cargas masivas de datos** (como migración de bases de datos, procesos ETL o al importar backups con `pg_restore`, reinicios forzados) para resolver el dilema entre **rapidez del proceso** y **precisión del optimizador de consultas**.
+
+ 
+### El Problema que Resuelve
+
+Cuando insertas millones de filas en una base de datos recién creada o vacía:
+
+1. **Estadísticas desactualizadas:** El planificador de consultas de PostgreSQL cree que la tabla tiene 0 filas.
+2. **Consultas bloqueadas o lentas:** Si la aplicación o el proceso ETL intenta hacer `JOINs` o buscar datos inmediatamente después de los primeros cargamentos, el optimizador elegirá planes nefastos (como *Sequential Scans* masivos o *Nested Loops* incorrectos) porque piensa que la tabla está vacía.
+3. **`ANALYZE` estándar es lento:** Ejecutar un `ANALYZE` completo al 100% de muestras al inicio consume tiempo y frena el pipeline de carga.
+ 
+### ¿Cómo funciona el *Analyze-in-Stages*?
+
+Consiste en ejecutar el comando `ANALYZE` **múltiples veces de forma consecutiva**, incrementando gradualmente el nivel de muestreo (`default_statistics_target`).
+
+Una secuencia típica de *Analyze-in-Stages* se ve así:
+
+```sql
+-- Etapa 1: Ultrarrápido (Muestra mínima de datos)
+SET default_statistics_target = 10;
+ANALYZE mi_tabla;
+
+-- Etapa 2: Precisión intermedia
+SET default_statistics_target = 50;
+ANALYZE mi_tabla;
+
+-- Etapa 3: Precisión estándar final
+SET default_statistics_target = 100;
+ANALYZE mi_tabla;
+
+```
+ 
+
+### ¿Por qué se requiere esta técnica?
+
+* **Genera estadísticas útiles en milisegundos:** La Etapa 1 (`target = 10`) analiza un número muy pequeño de páginas de disco. En cuestión de milisegundos le enseña a PostgreSQL el número aproximado de filas de la tabla.
+* **Desbloquea el rendimiento de inmediato:** Con la Etapa 1 completada, el motor ya sabe que la tabla no está vacía y deja de elegir los peores planes de ejecución posibles. La base de datos o el ETL pueden empezar a operar con planes "suficientemente buenos".
+* **Refina la precisión mientras el sistema trabaja:** Las etapas posteriores (2 y 3) aumentan el tamaño del muestreo para afinar la distribución de frecuencias (MCV - *Most Common Values*) y los histogramas, logrando la precisión óptima sin haber detenido el flujo de trabajo inicial.
+ 
+### ¿Dónde lo utiliza PostgreSQL de forma nativa?
+
+PostgreSQL utiliza esta misma estrategia en herramientas oficiales como **`vacuumdb --analyze-in-stages`**. Cuando corres este comando durante una migración o mantenimiento masivo, la herramienta internamente hace tres pasadas sobre la base de datos:
+
+1. **Pasada 1 (Etapa rápida):** Genera estadísticas mínimas para todas las tablas a máxima velocidad.
+2. **Pasada 2 (Etapa media):** Actualiza estadísticas con un nivel medio de detalle.
+3. **Pasada 3 (Etapa completa):** Corre el `ANALYZE` con los valores de producción definitivos.
+
+ 
 
 
