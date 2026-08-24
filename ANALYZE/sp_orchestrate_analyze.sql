@@ -120,7 +120,7 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_profile VARCHAR DEFAULT 'NORMAL',          -- 'NORMAL', 'PRELOAD'
     p_parallel_workers INT DEFAULT 4,
     p_verbose BOOLEAN DEFAULT FALSE,
-    p_threshold_pct NUMERIC DEFAULT 0.05,       -- 0.05 = 5%
+    p_threshold_pct NUMERIC DEFAULT 5.0,       --   5%
     p_min_rows INT DEFAULT 1000,
     p_cutoff_time TIME DEFAULT NULL,
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
@@ -203,7 +203,7 @@ BEGIN
           )
           AND (
               (p_scope LIKE 'SMART%' AND COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
-                  (COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) >= p_threshold_pct 
+                  (COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) >= (p_threshold_pct / 100.0) 
                   OR COALESCE(st.n_mod_since_analyze, 0) >= 50000 
                   OR mf.force_maintenance = TRUE
               )) OR
