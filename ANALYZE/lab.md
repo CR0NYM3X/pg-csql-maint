@@ -7,7 +7,7 @@ Ejecuta este script completo en tu entorno de desarrollo/pruebas.
 -- ============================================================================
 -- DBA SQUAD: VANGUARD BLACK-OPS - LABORATORIO DE CAOS SINTÉTICO
 -- ============================================================================
-SET autovacuum = off;
+
 
 BEGIN;
 CREATE SCHEMA IF NOT EXISTS lab;
@@ -31,6 +31,7 @@ CREATE TABLE lab.carritos (id SERIAL PRIMARY KEY, cliente_id INT, fecha_creacion
 CREATE TABLE lab.sesiones (id SERIAL PRIMARY KEY, token TEXT, ultima_actividad TIMESTAMP);
 CREATE TABLE lab.logs_auditoria (id SERIAL PRIMARY KEY, evento TEXT, fecha TIMESTAMP);
 
+-- Deshabilitamos el autovacuum para que no nos gane hacer el analyze, esto solo es para este laboratorio en produccion no se recomienda desactivar
 ALTER TABLE lab.clientes SET (autovacuum_enabled = false);
 ALTER TABLE lab.productos SET (autovacuum_enabled = false);
 ALTER TABLE lab.pedidos SET (autovacuum_enabled = false);
@@ -123,8 +124,6 @@ Antes de disparar el orquestador, corre esta consulta para ver qué es lo que el
 FROM pg_stat_user_tables
 WHERE     schemaname  = 'lab'
 ORDER BY change_pct DESC NULLS LAST;
-
-
 ```
 
 **Salida esperada**
@@ -133,10 +132,10 @@ ORDER BY change_pct DESC NULLS LAST;
 ------------+-----------------+-------------+-------------------+------------
  lab        | carritos        |       10000 |             10000 |     100.00
  lab        | sesiones        |       20000 |             18000 |      90.00
+ lab        | clientes        |       40000 |             20400 |      51.00
  lab        | pedidos         |       20000 |              3000 |      15.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
- lab        | clientes        |       20000 |               400 |       2.00
  lab        | envios          |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
@@ -154,48 +153,201 @@ Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enci
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
-      p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
       p_min_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
       p_force_rows       => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
-      p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
 ```
+**Salida esperada**
+```
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  >>> INICIANDO FASE 1 DE 1 <<<
+INFO:  ---------------------------------------------------------
+INFO:      [>] LANZANDO (Fase 1) PID 739947 -> lab.clientes
+INFO:      [>] LANZANDO (Fase 1) PID 739948 -> lab.sesiones
+INFO:      [>] LANZANDO (Fase 1) PID 739949 -> lab.carritos
+INFO:      [✓] EXITO (Fase 1) -> lab.clientes
+INFO:      [✓] EXITO (Fase 1) -> lab.sesiones
+INFO:      [✓] EXITO (Fase 1) -> lab.carritos
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 3 / 3
+INFO:  Tiempo Total: 00:00:01.032325
+INFO:  =========================================================
+CALL
+
+```
+
 
 #### PASO 2: Verifica la Telemetría 
 Corroborar la información
 ```sql
-SELECT 
+ SELECT
+    schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE relname LIKE 'lab_%'
+WHERE     schemaname  = 'lab'
 ORDER BY change_pct DESC NULLS LAST;
+```
+
+**Salida esperada**
+```
+ schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
+------------+-----------------+-------------+-------------------+------------
+ lab        | pedidos         |       20000 |              3000 |      15.00
+ lab        | logs_auditoria  |       22000 |              2000 |       9.09
+ lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | pagos           |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | carritos        |       10000 |                 0 |       0.00
+ lab        | sesiones        |       20000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | productos       |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
+```
+
+
+## Forzando las tablas que tengan igual o mas de 3000 filas modificadas
+```
+  CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
 
 ```
 
 **Salida esperada**
 ```
-+---------------------+-------------+-------------------+------------+
-|    nombre_tabla     | filas_vivas | filas_modificadas | change_pct |
-+---------------------+-------------+-------------------+------------+
-| lab_clientes        |       20000 |               400 |       2.00 |
-| lab_productos       |       20000 |                 0 |       0.00 |
-| lab_pedidos         |       20000 |                 0 |       0.00 |
-| lab_detalle_pedidos |       20000 |                 0 |       0.00 |
-| lab_pagos           |       20000 |                 0 |       0.00 |
-| lab_envios          |       20000 |                 0 |       0.00 |
-| lab_inventario      |       20000 |                 0 |       0.00 |
-| lab_carritos        |       10000 |                 0 |       0.00 |
-| lab_sesiones        |       20000 |                 0 |       0.00 |
-| lab_logs_auditoria  |       22000 |                 0 |       0.00 |
-+---------------------+-------------+-------------------+------------+
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  >>> INICIANDO FASE 1 DE 1 <<<
+INFO:  ---------------------------------------------------------
+INFO:      [>] LANZANDO (Fase 1) PID 740512 -> lab.pedidos
+INFO:      [✓] EXITO (Fase 1) -> lab.pedidos
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.019195
+INFO:  =========================================================
+CALL
 ```
 
-## Monitorear
+####  Verifica la Telemetría 
+Corroborar la información
+```sql
+ SELECT
+    schemaname,
+    relname AS nombre_tabla,
+    n_live_tup AS filas_vivas,
+    n_mod_since_analyze AS filas_modificadas,
+    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
+FROM pg_stat_user_tables
+WHERE     schemaname  = 'lab'
+ORDER BY change_pct DESC NULLS LAST;
+```
+
+**Salida esperada**
+```
+ schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
+------------+-----------------+-------------+-------------------+------------
+ lab        | logs_auditoria  |       22000 |              2000 |       9.09
+ lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
+ lab        | pagos           |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | carritos        |       10000 |                 0 |       0.00
+ lab        | sesiones        |       20000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | productos       |       20000 |                 0 |       0.00
+(10 rows)
+```
+
+## Ejecutar ahora los que tengan 5% , minimo 1500 filas modificadas
+```
+  CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 5,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_rows         => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
+```
+
+
+**Salida esperada**
+```
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  >>> INICIANDO FASE 1 DE 1 <<<
+INFO:  ---------------------------------------------------------
+INFO:      [>] LANZANDO (Fase 1) PID 740804 -> lab.logs_auditoria
+INFO:      [✓] EXITO (Fase 1) -> lab.logs_auditoria
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 4 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.018665
+INFO:  =========================================================
+CALL
+```
+
+####  Verifica la Telemetría 
+Corroborar la información
+```sql
+ SELECT
+    schemaname,
+    relname AS nombre_tabla,
+    n_live_tup AS filas_vivas,
+    n_mod_since_analyze AS filas_modificadas,
+    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
+FROM pg_stat_user_tables
+WHERE     schemaname  = 'lab'
+ORDER BY change_pct DESC NULLS LAST;
+```
+
+**Salida esperada**
+```
+ schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
+------------+-----------------+-------------+-------------------+------------
+ lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | productos       |       20000 |                 0 |       0.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
+ lab        | pagos           |       20000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | carritos        |       10000 |                 0 |       0.00
+ lab        | sesiones        |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | logs_auditoria  |       22000 |                 0 |       0.00
+```
+
+
+---
+# Monitorear
  
 
 ### 1. MONITOREO EN VIVO DESDE `pg_stat_activity`
@@ -218,6 +370,7 @@ ORDER BY query_start ASC;
 
 ```
 
+ 
 ---
 
 ### 2. MONITOREO FORENSE DESDE `maint.analyze_tasks`
