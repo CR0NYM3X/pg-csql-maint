@@ -195,3 +195,65 @@ $$\frac{4,000,000}{100,000,000} \times 100 = 4.00\%$$
 * **La Solución con `p_force_rows`:** Garantiza que cada vez que se acumulen 50,000 nuevos registros en la cola (o el valor que configure el DBA), se dispare un refresco de estadísticas para que el planificador sepa que esos nuevos IDs existen.
 
 
+---
+
+
+ 
+
+## 🔄 Flujo de Vida cuando el Padre Muere y sus Diferentes Escenarios
+
+El orquestador opera bajo el principio de **Desacoplamiento Operativo y Resiliencia en Segundo Plano**. Si la sesión cliente (el "Padre") muere debido a una cancelación explícita (`CTRL+C`), una caída del enlace de red, un *timeout* de socket o un evento de eliminación del proceso (`kill -9`), los trabajadores asíncronos en segundo plano (`pg_background_launch`) **no se abortan ni corrompen el estado del motor de PostgreSQL**.
+
+Los procesos hijos continúan su ciclo de ejecución de forma independiente en el kernel de la base de datos hasta concluir la tarea sobre la tabla asignada.
+
+---
+
+### 🗺️ Diagrama de Flujo de Decisiones
+
+```
+                            [INICIO DE ORQUESTACIÓN]
+                                       │
+                                       ▼
+                       [Orquestador Padre (maint.jobs)]
+                                       │
+                         Lanza trabajadores asíncronos
+                                       │
+                     ┌─────────────────┴─────────────────┐
+                     ▼                                   ▼
+             [Worker Hijo 1]                     [Worker Hijo 2]
+             (pg_background)                     (pg_background)
+                     │                                   │
+                     └─────────────────┬─────────────────┘
+                                       │
+                         ¿EL PADRE ES INTERRUMPIDO?
+                                       │
+                     ┌─────────────────┴─────────────────┐
+                     │ SÍ                                │ NO
+                     ▼                                   ▼
+        [Sesión Cliente Muere]               [Proceso Normal]
+                     │                       • Padre recolecta resultados
+                     │                       • Cierre: status = 'COMPLETED'
+                     ▼
+         ¿ESTADO DE LOS HIJOS?
+                     │
+    ┌────────────────┴────────────────┐
+    │                                 │
+    ▼                                 ▼
+[Hijos Siguen Vivos]            [Hijos Finalizan / No Iniciaron]
+• Hijos terminan ANALYZE en SO   • Tareas terminadas/abandonadas
+• maint.jobs queda en 'RUNNING'  • Próxima ejecución ejecuta Self-Healing
+• Base de Datos Queda OK         • Reconcilia a 'ABORTED_ORPHAN'
+
+```
+
+---
+
+### 📋 Matriz de Escenarios Operativos y Reconciliación
+
+| Escenario de Fallo | Estado de los Procesos Hijos (`pg_background`) | Estado del Job Padre (`maint.jobs`) | Estado de Tareas (`maint.analyze_tasks`) | Diagnóstico Forense y Acción del Sistema |
+| --- | --- | --- | --- | --- |
+| **Escenario 1: Interrupción Interactiva (`CTRL+C` / `SIGINT` en consola)** | **En Ejecución:** Los trabajadores siguen ejecutando activamente en segundo plano. | **`RUNNING`** | **`RUNNING`** | **Inmunidad Activa:** No se altera la tabla de control inmediatamente. Los hijos concluyen el mantenimiento en el motor. La base de datos queda optimizada a pesar de la pérdida del cliente. |
+| **Escenario 2: Cierre de Sesión / Caída de Red (Padre Muerto + Hijos Finalizados)** | **Finalizados:** Los trabajadores terminaron su `ANALYZE` en el motor y sus PIDs desaparecieron de `pg_stat_activity`. | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **Auto-Adopción y Self-Healing:** En la siguiente llamada del orquestador (bloque 1-B), se detecta la ausencia del Padre y los Hijos. Se adjudica el estado sin falsear el registro histórico. |
+| **Escenario 3: Cancelación Precoz (Fallo antes de despachar trabajadores)** | **Inexistentes:** No se alcanzó a instanciar ningún proceso vía `pg_background_launch`. | **`ABORTED_ORPHAN`** | **`FAILED_ORPHAN`** | **Limpieza de Cola:** Las tareas en cola `PENDING` se marcan con el log de auditoría *"Orchestrator process died unexpectedly"*. |
+| **Escenario 4: Matanza Forzada del Servidor (`kill -9` al PID del Padre)** | **Autónomos:** Finalizan su instrucción por su cuenta a nivel de proceso de PostgreSQL. | **`ABORTED_ORPHAN`** | **`ABORTED_ORPHAN`** | **Reconciliación Multidimensional:** El bloque 1-B audita las firmas de código de la sesión anterior en la siguiente ejecución y cierra el expediente sin bloquear nuevos despachos. |
+ 
