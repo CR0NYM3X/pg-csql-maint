@@ -114,15 +114,18 @@ COMMENT ON COLUMN maint.analyze_tasks.ended_at IS 'Marca de tiempo de finalizaci
 COMMENT ON COLUMN maint.analyze_tasks.error_log IS 'Captura forense del mensaje nativo de error (SQLERRM) extraído de la memoria dinámica.';
 
 
--- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_analyze(VARCHAR, VARCHAR, INT, BOOLEAN, NUMERIC, INT, TIME, BOOLEAN);
+
+
+-- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_analyze(VARCHAR, VARCHAR, INT, BOOLEAN, NUMERIC, INT, INT, TIME, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_scope VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM'
     p_profile VARCHAR DEFAULT 'NORMAL',          -- 'NORMAL', 'PRELOAD'
     p_parallel_workers INT DEFAULT 4,
     p_verbose BOOLEAN DEFAULT FALSE,
-    p_threshold_pct NUMERIC DEFAULT 5.0,       --   5%
-    p_min_rows INT DEFAULT 1000,
-    p_cutoff_time TIME DEFAULT NULL,
+    p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado con Vacuum)
+    p_min_rows INT DEFAULT 1000,                -- Mínimo de cambios para evaluar
+    p_force_rows INT DEFAULT 50000,             -- Filas modificadas para FORZAR analyze (NULL para desactivar)
+    p_cutoff_time TIME DEFAULT NULL,            -- puedes usarlo asi '06:00:00'::TIME
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
 )
 LANGUAGE plpgsql AS $$
@@ -148,7 +151,7 @@ BEGIN
         RAISE EXCEPTION 'CRÍTICO: El perfil "%" no es válido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
     END IF;
 
-    -- 2. Interceptar SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
+    -- 2. Intercepta SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
     FOR v_param IN (
         SELECT name, setting 
         FROM pg_settings 
@@ -181,7 +184,7 @@ BEGIN
             RAISE INFO '---------------------------------------------------------';
         END IF;
 
-        -- POBLAR COLA PARA LA FASE ACTUAL CON INTEGRACIÓN DE FILTROS Y ALCANCE (p_scope)
+        -- POBLAR COLA PARA LA FASE ACTUAL CON INTEGRACIÓN CORREGIDA DE FILTROS Y ALCANCE
         INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
         SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, COALESCE(st.n_mod_since_analyze, 0),
                ROUND((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100, 2), v_current_stage
@@ -202,10 +205,13 @@ BEGIN
               (p_scope = 'ALL_SYSTEM' AND st.schemaname IN ('pg_catalog', 'information_schema'))
           )
           AND (
-              (p_scope LIKE 'SMART%' AND COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
-                  (COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) >= (p_threshold_pct / 100.0) 
-                  OR COALESCE(st.n_mod_since_analyze, 0) >= 50000 
-                  OR mf.force_maintenance = TRUE
+              (p_scope LIKE 'SMART%' AND (
+                  mf.force_maintenance = TRUE OR (
+                      COALESCE(st.n_mod_since_analyze, 0) >= p_min_rows AND (
+                          ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) ) >= (p_threshold_pct / 100 )
+                          OR (p_force_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_rows)
+                      )
+                  )
               )) OR
               (p_scope NOT LIKE 'SMART%')
           )
