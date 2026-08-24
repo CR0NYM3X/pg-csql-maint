@@ -6,16 +6,23 @@ CREATE SCHEMA IF NOT EXISTS maint;
 -- 1. TABLA PADRE: Orquestación Global
 -- DROP TABLE IF EXISTS maint.jobs CASCADE;
 -- TRUNCATE TABLE maint.jobs RESTART IDENTITY CASCADE ;
+-- 1. Crear la tabla maestra de control con soporte para Orchestrator PID y Parámetros Universal JSONB
 CREATE TABLE IF NOT EXISTS maint.jobs (
     job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    job_type VARCHAR(50) NOT NULL,
-    maintenance_action VARCHAR(20) NOT NULL, -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
-    execution_params JSONB NOT NULL,          -- Registro universal de parámetros en formato JSONB
-    status VARCHAR(30) NOT NULL DEFAULT 'RUNNING',
-    tables_processed INT DEFAULT 0,
+    job_type VARCHAR(50) NOT NULL,              -- Ej. 'SMART_USER_NORMAL', 'ALL_USER_PRELOAD'
+    maintenance_action VARCHAR(20) NOT NULL,    -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
+    orchestrator_pid INT NOT NULL,              -- PID del proceso principal (Padre) para Self-Healing de 2 niveles
+    execution_params JSONB NOT NULL,             -- Fotografía inmutable de los 8/9 parámetros de la invocación
+    status VARCHAR(30) NOT NULL DEFAULT 'RUNNING',-- 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_CUTOFF', 'ABORTED_ORPHAN', 'CANCELLED_BY_USER'
+    tables_processed INT DEFAULT 0,             -- Cantidad real de tablas intervenidas exitosamente
     started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    ended_at TIMESTAMPTZ
+    ended_at TIMESTAMPTZ                        -- Sello de tiempo final cuando concluye o se reconcilia
 );
+
+-- 2. Índice táctico para acelerar la auto-sanación de Jobs colgados al inicio de cada ejecución
+CREATE INDEX IF NOT EXISTS idx_jobs_status_action 
+ON maint.jobs (status, maintenance_action) 
+WHERE status = 'RUNNING';
 
 -- 3. ÍNDICE DE HERENCIA Y RENDIMIENTO
 CREATE INDEX IF NOT EXISTS idx_maint_jobs_type_action_id 
@@ -144,15 +151,78 @@ BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
-    -- 1. Validar Perfil y determinar número de etapas
+    -- 1-A. Validar Perfil y determinar número de etapas
     IF UPPER(p_profile) = 'PRELOAD' THEN 
         v_max_stages := 3; 
     ELSIF UPPER(p_profile) <> 'NORMAL' THEN
         RAISE EXCEPTION 'CRITICO: El perfil "%" no es valido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
     END IF;
 
+    -- 1-B. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL (Escáner por Firma Digital de Proceso)
+    -- Paso A: Identificar Jobs cuyo Padre murió Y cuyos Hijos ya no están activos en pg_stat_activity
+    WITH dead_parent_jobs AS (
+        SELECT j.job_id 
+        FROM maint.jobs j
+        WHERE j.status = 'RUNNING' 
+          AND j.maintenance_action = 'ANALYZE'
+          -- CANDADO DE PADRE: Valida PID + Firma de Código + Estado Activo (Compatible con pg_cron y CLI)
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_stat_activity a 
+              WHERE a.pid = j.orchestrator_pid 
+                AND a.query ILIKE '%sp_orchestrate_analyze%'
+                AND a.state != 'idle'
+          )
+          -- CANDADO DE HIJOS: Valida que no queden trabajadores pg_background procesando tareas
+          AND NOT EXISTS (
+              SELECT 1 FROM maint.analyze_tasks t
+              JOIN pg_stat_activity a ON a.pid = t.child_pid
+              WHERE t.job_id = j.job_id 
+                AND t.status = 'RUNNING'
+                AND a.backend_type = 'pg_background'
+                AND a.query ILIKE 'ANALYZE %'
+          )
+    )
+    -- Actualizar tareas congeladas de Jobs huérfanos
+    UPDATE maint.analyze_tasks 
+    SET status = 'ABORTED_ORPHAN', 
+        ended_at = clock_timestamp(),
+        error_log = 'Orchestrator process died. Task completed or abandoned without live collector.'
+    WHERE status IN ('PENDING', 'RUNNING')
+      AND job_id IN (SELECT job_id FROM dead_parent_jobs);
+
+    -- Paso B: Cerrar y adjudicar el estado final en el Job Padre
+    WITH dead_parent_jobs AS (
+        SELECT j.job_id 
+        FROM maint.jobs j
+        WHERE j.status = 'RUNNING' 
+          AND j.maintenance_action = 'ANALYZE'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_stat_activity a 
+              WHERE a.pid = j.orchestrator_pid 
+                AND a.query ILIKE '%sp_orchestrate_analyze%'
+                AND a.state != 'idle'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM maint.analyze_tasks t
+              JOIN pg_stat_activity a ON a.pid = t.child_pid
+              WHERE t.job_id = j.job_id 
+                AND t.status = 'RUNNING'
+                AND a.backend_type = 'pg_background'
+                AND a.query ILIKE 'ANALYZE %'
+          )
+    )
+    UPDATE maint.jobs 
+    SET status = 'ABORTED_ORPHAN', 
+        ended_at = clock_timestamp(),
+        tables_processed = (
+            SELECT COUNT(*) FROM maint.analyze_tasks 
+            WHERE job_id = maint.jobs.job_id AND status = 'SUCCESS'
+        )
+    WHERE job_id IN (SELECT job_id FROM dead_parent_jobs);
+
+    COMMIT;
+
     -- 2. Interceptar SETs locales de la sesión SOLO si sufrieron cambios respecto a su reset_val
-    -- Se incluye default_statistics_target, pero se excluye de v_set_prefix si el perfil es PRELOAD
     FOR v_param IN (
         SELECT name, setting 
         FROM pg_settings 
@@ -186,9 +256,9 @@ BEGIN
         'keep_history', p_keep_history
     );
 
-    -- Crear Job Padre con registro universal JSONB
-    INSERT INTO maint.jobs (job_type, maintenance_action, execution_params, status)
-    VALUES (p_scope || '_' || UPPER(p_profile), 'ANALYZE', v_execution_params, 'RUNNING')
+    -- Crear Job Padre registrando el PID actual (pg_backend_pid)
+    INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
+    VALUES (p_scope || '_' || UPPER(p_profile), 'ANALYZE', pg_backend_pid(), v_execution_params, 'RUNNING')
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
@@ -250,7 +320,7 @@ BEGIN
 
         -- 5. BUCLE DE DESPACHO ASÍNCRONO
         LOOP
-            -- A. RECOLECTOR FORENSE
+            -- A. RECOLECTOR FORENSE (Manejo de errores por trabajador individual - Preserva child_pid)
             FOR r_finished IN 
                 SELECT task_id, child_pid, schema_name, table_name FROM maint.analyze_tasks 
                 WHERE job_id = v_job_id AND stage_number = v_current_stage 
@@ -259,17 +329,18 @@ BEGIN
                 BEGIN
                     PERFORM * FROM public.pg_background_result(r_finished.child_pid::INT) AS (result TEXT);
 
-                    UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
+                    -- Se conserva el child_pid inmutable para trazabilidad forense (Auditoría PCI-DSS / ISO 27001)
+                    UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp() WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1;
                     IF p_verbose THEN RAISE INFO '    [✓] EXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
                 EXCEPTION WHEN OTHERS THEN
-                    UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM, child_pid = NULL WHERE task_id = r_finished.task_id;
+                    UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM WHERE task_id = r_finished.task_id;
                     IF p_verbose THEN RAISE WARNING '    [ERROR] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
                 END;
                 COMMIT;
             END LOOP;
 
-            -- B. FRENO DE EMERGENCIA (KILL-SWITCH)
+            -- B. FRENO DE EMERGENCIA (KILL-SWITCH POR TIEMPO)
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
                 UPDATE maint.analyze_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' 
                 WHERE job_id = v_job_id AND stage_number = v_current_stage AND status = 'PENDING';
@@ -326,14 +397,14 @@ BEGIN
         v_current_stage := v_current_stage + 1;
     END LOOP;
 
-    -- 6. CIERRE, REPORTE Y PURGA OPCIONAL
+    -- 6. CIERRE NORMAL DE JOB
     IF EXISTS (SELECT 1 FROM maint.analyze_tasks WHERE job_id = v_job_id AND status = 'SKIPPED_TIME_LIMIT') THEN
         UPDATE maint.jobs SET status = 'COMPLETED_WITH_CUTOFF', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     ELSE
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     END IF;
 
-    -- Purga de la cola de tareas si el DBA no desea almacenar el historial de tareas
+    -- Purga de la cola de tareas si el DBA no desea almacenar el historial
     IF NOT p_keep_history THEN
         DELETE FROM maint.analyze_tasks WHERE job_id = v_job_id;
         IF p_verbose THEN RAISE INFO '[PURGE] Purga ejecutada: Registros de maint.analyze_tasks eliminados para el Job %.', v_job_id; END IF;
