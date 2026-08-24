@@ -34,6 +34,30 @@ COMMENT ON COLUMN maint.jobs.status IS 'Estado global del trabajo (INITIALIZING,
 COMMENT ON COLUMN maint.jobs.started_at IS 'Marca de tiempo (Timestamptz) de cuando inició el orquestador maestro.';
 COMMENT ON COLUMN maint.jobs.ended_at IS 'Marca de tiempo (Timestamptz) de cuando concluyó la orquestación global.';
 
+-- DROP TABLE IF EXISTS maint.filters CASCADE;
+CREATE TABLE maint.filters (
+    filter_id SERIAL PRIMARY KEY,                              
+    schema_name VARCHAR(255) NOT NULL,                         
+    table_name VARCHAR(255) NOT NULL,
+    
+    -- [CORRECCIÓN DIAMANTE] Columna con integridad de dominio estricta
+    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL',                         
+    is_ignored BOOLEAN NOT NULL DEFAULT FALSE,                 
+    force_maintenance BOOLEAN NOT NULL DEFAULT FALSE,          
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), 
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), 
+    updated_by VARCHAR(100) DEFAULT current_user,              
+    
+    -- REGLA 1: Evitar duplicidad de la misma acción para la misma tabla
+    CONSTRAINT uq_maintenance_filters_schema_table_action UNIQUE (schema_name, table_name, maintenance_action),
+    
+    -- REGLA 2: [NUEVO] El candado del Gatekeeper. Solo admite estos 5 valores exactos.
+    CONSTRAINT chk_valid_maintenance_action CHECK (
+        maintenance_action IN ('ALL', 'VACUUM', 'VACUUM_FULL', 'ANALYZE', 'REINDEX')
+    )
+);
+
+COMMENT ON CONSTRAINT chk_valid_maintenance_action ON maint.filters IS 'Candado de integridad: Previene errores tipográficos al registrar filtros de mantenimiento.';
 
 
  
