@@ -114,32 +114,33 @@ COMMIT;
 Antes de disparar el orquestador, corre esta consulta para ver qué es lo que el motor de PostgreSQL está detectando. Aquí verás exactamente las matemáticas que usará nuestro orquestador:
 
 ```sql
-SELECT
+  SELECT
     schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE relname LIKE 'lab_%' OR schemaname  = 'lab'
+WHERE     schemaname  = 'lab'
 ORDER BY change_pct DESC NULLS LAST;
+
 
 ```
 
 **Salida esperada**
 ```
- schemaname |    nombre_tabla     | filas_vivas | filas_modificadas | change_pct 
-------------+---------------------+-------------+-------------------+------------
- lab        | carritos            |       30000 |             30000 |     100.00
- lab        | sesiones            |       40000 |             38000 |      95.00
- lab        | pedidos             |       40000 |             23000 |      57.50
- lab        | inventario          |       40000 |             21200 |      53.00
- lab        | logs_auditoria      |       42000 |             22000 |      52.38
- lab        | clientes            |       40000 |             20400 |      51.00
- lab        | productos           |       40000 |             20000 |      50.00
- lab        | detalle_pedidos     |       40000 |             20000 |      50.00
- lab        | pagos               |       40000 |             20000 |      50.00
- lab        | envios              |       40000 |             20000 |      50.00
+ schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
+------------+-----------------+-------------+-------------------+------------
+ lab        | carritos        |       10000 |             10000 |     100.00
+ lab        | sesiones        |       20000 |             18000 |      90.00
+ lab        | pedidos         |       20000 |              3000 |      15.00
+ lab        | logs_auditoria  |       22000 |              2000 |       9.09
+ lab        | inventario      |       20000 |              1200 |       6.00
+ lab        | clientes        |       20000 |               400 |       2.00
+ lab        | envios          |       20000 |                 0 |       0.00
+ lab        | pagos           |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
+ lab        | productos       |       20000 |                 0 |       0.00
 ```
 
 
@@ -150,16 +151,16 @@ Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enci
 
 ```sql
   CALL maint.sp_orchestrate_analyze(
-      p_scope            => 'SMART_USER',   -- Solo tablas de usuario modificadas
-      p_profile          => 'NORMAL',       -- 1 pasada estándar
-      p_parallel_workers => 4,              -- 4 núcleos simultáneos
-      p_verbose          => true,          -- Silencioso
-      p_threshold_pct    => 51,           -- Umbral del 5% de volatilidad
-      p_min_rows         => 1000,           -- Ignora tablas con < 1000 cambios
-      p_cutoff_time      => NULL, --    Deshabilitars la hora para detener la ejecucion o puedes colocar por ejem: '06:00:00'::TIME
-      p_keep_history     => TRUE   --  Mantener los registros de este escaneo en maint.vacuum_tasks
-  ); 
-
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_rows       => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
 ```
 
 #### PASO 2: Verifica la Telemetría 
