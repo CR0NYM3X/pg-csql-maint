@@ -240,7 +240,7 @@ BEGIN
         IF v_current_stage = 1 AND v_total_tasks = 0 THEN
             IF p_verbose THEN 
                 RAISE INFO '---------------------------------------------------------';
-                RAISE INFO '[OK] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema optimo)', v_job_id;
+                RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: 0 / 0 (Sistema optimo)', v_job_id;
                 RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
                 RAISE INFO '=========================================================';
             END IF;
@@ -261,7 +261,7 @@ BEGIN
 
                     UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), child_pid = NULL WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1;
-                    IF p_verbose THEN RAISE INFO '    [OK] EXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
+                    IF p_verbose THEN RAISE INFO '    [✓] EXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
                 EXCEPTION WHEN OTHERS THEN
                     UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM, child_pid = NULL WHERE task_id = r_finished.task_id;
                     IF p_verbose THEN RAISE WARNING '    [ERROR] FALLO EN %.%: %', r_finished.schema_name, r_finished.table_name, SQLERRM; END IF;
@@ -311,7 +311,7 @@ BEGIN
                     UPDATE maint.analyze_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id;
                     COMMIT;
 
-                    IF p_verbose THEN RAISE INFO '    [RUN] LANZANDO (Fase %) PID % -> %.%', v_current_stage, v_child_pid, v_schema, v_table; END IF;
+                    IF p_verbose THEN RAISE INFO '    [>] LANZANDO (Fase %) PID % -> %.%', v_current_stage, v_child_pid, v_schema, v_table; END IF;
                     v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
                 END IF;
             END LOOP;
@@ -343,7 +343,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '---------------------------------------------------------';
-        RAISE INFO '[OK] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
+        RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Tablas procesadas: % / %', v_job_id, v_success_count, v_total_tasks;
         RAISE INFO 'Tiempo Total: %', (clock_timestamp() - v_start_time);
         RAISE INFO '=========================================================';
     END IF;
