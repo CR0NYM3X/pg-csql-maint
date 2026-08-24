@@ -47,8 +47,6 @@ COMMENT ON TABLE maint.jobs IS 'Cabecera maestra que almacena el estado global, 
 COMMENT ON COLUMN maint.jobs.job_id IS 'Identificador único secuencial del trabajo maestro de mantenimiento.';
 COMMENT ON COLUMN maint.jobs.job_type IS 'Combinación del alcance (Scope) y perfil asignado al trabajo (ej. SMART_USER_BALANCED).';
 COMMENT ON COLUMN maint.jobs.maintenance_action IS 'Acción principal ejecutada por el orquestador (ej. VACUUM, ANALYZE).';
-COMMENT ON COLUMN maint.jobs.threshold_pct IS 'Umbral porcentual de tuplas muertas o espacio libre configurado para el disparo.';
-COMMENT ON COLUMN maint.jobs.parallel_workers IS 'Límite de concurrencia máxima de procesos hijos asignados al trabajo.';
 COMMENT ON COLUMN maint.jobs.tables_processed IS 'Métrica incrementada en memoria RAM del total de tablas procesadas con éxito.';
 COMMENT ON COLUMN maint.jobs.status IS 'Estado actual del job (INITIALIZING, RUNNING, COMPLETED, COMPLETED_WITH_CUTOFF).';
 COMMENT ON COLUMN maint.jobs.started_at IS 'Marca de tiempo (Timestamptz) de cuando inició el orquestador maestro.';
@@ -90,7 +88,7 @@ COMMENT ON COLUMN maint.vacuum_tasks.error_log IS 'Texto descriptivo del error n
 -- 3. TABLA DE CONTROL: Reglas y Filtros de Seguridad (Blacklist / Whitelist)
 -- =========================================================================================
 -- DROP TABLE IF EXISTS maint.filters CASCADE;
-CREATE TABLE maint.filters (
+CREATE TABLE IF NOT EXISTS maint.filters (
     filter_id SERIAL PRIMARY KEY,                              
     schema_name VARCHAR(255) NOT NULL,                         
     table_name VARCHAR(255) NOT NULL,
