@@ -81,15 +81,16 @@ La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu con
 SELECT cron.schedule_in_database('vanguard_smart_analyze_daily', '0 2 * * *', 
 $$ 
   CALL maint.sp_orchestrate_analyze(
-      p_scope            => 'SMART_USER',   -- Solo tablas de usuario modificadas
-      p_profile          => 'NORMAL',       -- 1 pasada estándar
-      p_parallel_workers => 4,              -- 4 núcleos simultáneos
-      p_verbose          => FALSE,          -- Silencioso
-      p_threshold_pct    => 5.0,           -- Umbral del 5% de volatilidad
-      p_min_rows         => 1000,           -- Ignora tablas con < 1000 cambios
-      p_cutoff_time      => '06:00:00'::TIME, -- [KILL SWITCH] Aborto a las 6:00 AM
-      p_keep_history     => FALSE           -- [HIGIENE] Purgar detalles al terminar para no ocupar espacio
-  ); 
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_rows       => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
 $$, 
 'mi_base_de_datos', 'postgres', true);
 
@@ -152,3 +153,33 @@ CALL maint.sp_orchestrate_analyze(p_scope => 'SMART_USER');
 | `p_min_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad  mínima de modificaciones para considerar la tabla. |
 | `p_cutoff_time` | `TIME` | `NULL` | **Kill Switch.** Hora militar tope. Si se supera, aborta las tareas encoladas limpiamente. |
 | `p_keep_history` | `BOOLEAN` | `TRUE` | **Purga Efímera.** `TRUE` conserva el detalle del job en `analyze_tasks`. `FALSE` elimina los registros detallados al finalizar, previniendo el *bloat* del orquestador. (La tabla `jobs` nunca se borra). |
+
+
+
+---
+
+
+###  `p_force_rows` para tablas gigantes
+
+El parámetro `p_force_rows` (por defecto 50,000) se diseñó para resolver el **Efecto de Ceguera por Volumen en Tablas Masivas (Very Large Databases - VLDB)**.
+
+
+#### Escenario A: Tablas Gigantes con Volatilidad Porcentual Invisible
+
+* **Contexto:** Tienes una tabla `public.transacciones_bancarias` con **100,000,000 (100 Millones)** de filas vivas.
+* **El Problema:** Durante el día, la tabla sufre **4,000,000 (4 Millones)** de nuevos `INSERT` y `UPDATE`.
+* **La Falla del Porcentaje:** Si calculamos el porcentaje de cambio:
+
+$$\frac{4,000,000}{100,000,000} \times 100 = 4.00\%$$
+
+
+* Si tu parámetro `p_threshold_pct` está en `5.00` (5%), el orquestador **IGNORARÁ la tabla**, a pesar de que 4 millones de cambios destruyeron la precisión de los histogramas del optimizador (`pg_statistic`).
+* **La Solución con `p_force_rows => 50000`:** Como $4,000,000 \ge 50,000$, la condición `p_force_rows` se activa y **fuerza la entrada de la tabla al `ANALYZE**`, evitando que las consultas empiecen a hacer *Sequential Scans* destructivos al día siguiente.
+
+#### Escenario B: Tablas de Crecimiento Constante (Append-Only Log / Historiales)
+
+* **Contexto:** Tablas de auditoría o *logs* que nunca sufren `UPDATE`, solo `INSERT` continuos a alta velocidad.
+* **El Problema:** Conforme la tabla crece a decenas de millones de filas, cada vez es matemáticamente más difícil que los nuevos registros alcancen el 5% de la masa total de la tabla. El optimizador de PostgreSQL perderá visibilidad de los nuevos rangos de IDs/fechas agregados recientemente (problema de *Data Drift* en llaves primarias crecientes).
+* **La Solución con `p_force_rows`:** Garantiza que cada vez que se acumulen 50,000 nuevos registros en la cola (o el valor que configure el DBA), se dispare un refresco de estadísticas para que el planificador sepa que esos nuevos IDs existen.
+
+
