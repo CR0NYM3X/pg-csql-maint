@@ -104,6 +104,14 @@ UPDATE lab.clientes SET estatus = 'INACTIVO' WHERE id <= 400;
 
 COMMIT;
 
+
+-- ====================================================================================
+-- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
+-- ====================================================================================
+INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance, maintenance_action) VALUES 
+('lab', 'sesiones', TRUE, FALSE, 'ANALYZE'),  -- [ESCUDO ACTIVO]: Intocable.
+('lab', 'carritos', FALSE, TRUE, 'ANALYZE');      -- [PASE VIP]: Mantenimiento prioritario.
+
 ```
 
 ---
@@ -111,8 +119,6 @@ COMMIT;
 ### 🔍 CÓMO EJECUTAR LA PRUEBA TÁCTICA
 
 #### PASO 1: Verifica la Telemetría (El Radar)
-
-Antes de disparar el orquestador, corre esta consulta para ver qué es lo que el motor de PostgreSQL está detectando. Aquí verás exactamente las matemáticas que usará nuestro orquestador:
 
 ```sql
   SELECT
@@ -146,9 +152,8 @@ ORDER BY change_pct DESC NULLS LAST;
 
 
 #### PASO 2: Dispara el Orquestador Vanguard (Modo Visual)
-
-Ahora, activa el arma. Pídele 4 hilos paralelos, un umbral del 5% (0.05) y enciende el modo visual (`TRUE`):
-
+En este escenario solo deberia de ejecutar la tabla lab.carritos esto debido a que la tabla lab.sesiones tiene aplicado el filtro en la tabla  maint.filters
+y la columna is_ignored esta en true para le mantenimiento analyze.
 ```sql
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
@@ -171,16 +176,13 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 750576 -> lab.sesiones
-INFO:      [>] LANZANDO (Fase 1) PID 750577 -> lab.carritos
-INFO:      [✓] EXITO (Fase 1) -> lab.sesiones
+INFO:      [>] LANZANDO (Fase 1) PID 878952 -> lab.carritos
 INFO:      [✓] EXITO (Fase 1) -> lab.carritos
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 1 | Tablas procesadas: 2 / 2
-INFO:  Tiempo Total: 00:00:01.029435
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.017875
 INFO:  =========================================================
 CALL
-
 ```
 
 
@@ -202,21 +204,23 @@ ORDER BY change_pct DESC NULLS LAST;
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
+ lab        | sesiones        |       20000 |             18000 |      90.00
  lab        | pedidos         |       20000 |              3000 |      15.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
  lab        | clientes        |       20000 |               400 |       2.00
- lab        | pagos           |       20000 |                 0 |       0.00
  lab        | envios          |       20000 |                 0 |       0.00
- lab        | detalle_pedidos |       20000 |                 0 |       0.00
+ lab        | pagos           |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
- lab        | sesiones        |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
 ```
 
 
 ## Forzando las tablas que tengan igual o mas de 3000 filas modificadas
+aqui unicamente se debe aplicar mantenimiento a la tabla lab.pedidos ya que lab.sesiones a pesar de cumplir con los requisitos 
+tiene el un filtro en la tabla  maint.filters y la columna is_ignored esta en true para le mantenimiento analyze.
 ```
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
@@ -241,11 +245,11 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 750656 -> lab.pedidos
+INFO:      [>] LANZANDO (Fase 1) PID 879190 -> lab.pedidos
 INFO:      [✓] EXITO (Fase 1) -> lab.pedidos
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.019255
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.016517
 INFO:  =========================================================
 CALL
 ```
@@ -268,20 +272,22 @@ ORDER BY change_pct DESC NULLS LAST;
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
+ lab        | sesiones        |       20000 |             18000 |      90.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
  lab        | clientes        |       20000 |               400 |       2.00
- lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | envios          |       20000 |                 0 |       0.00
- lab        | pedidos         |       20000 |                 0 |       0.00
+ lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
- lab        | sesiones        |       20000 |                 0 |       0.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
 ```
 
 ## Ejecutar ahora los que tengan 5% y minimo 1500 filas modificadas
+aqui unicamente deberia aplicar para la tabla lab.logs_auditoria  este porque cumple con los requisitos de minimo de filas cambiadas 1500 y mas de 5% 
+, la tabla lab.inventario  no aplica esto debido a que no cumple con el minimo de filas
 ```
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
@@ -306,11 +312,11 @@ INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 750733 -> lab.logs_auditoria
+INFO:      [>] LANZANDO (Fase 1) PID 879411 -> lab.logs_auditoria
 INFO:      [✓] EXITO (Fase 1) -> lab.logs_auditoria
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.019036
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 4 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.016955
 INFO:  =========================================================
 CALL
 ```
@@ -333,18 +339,177 @@ ORDER BY change_pct DESC NULLS LAST;
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
+ lab        | sesiones        |       20000 |             18000 |      90.00
  lab        | inventario      |       20000 |              1200 |       6.00
  lab        | clientes        |       20000 |               400 |       2.00
- lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | envios          |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
- lab        | sesiones        |       20000 |                 0 |       0.00
  lab        | logs_auditoria  |       22000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
 (10 rows)
 ```
+
+
+
+
+
+
+# Escenario : Interrupcion de  orquestador y hijo 
+en este ejemplo mostraremos que pasa si se cae un orquestador y alguno de sus hijos   se quedan en estatus RUNNING pero algunos hijos si alcanzaron a finalizar,
+primero cambiamos el panorama para simular este escenario 
+```SQL
+update maint.jobs set status = 'RUNNING'  where job_id = 1 ;
+update maint.analyze_tasks set status = 'RUNNING'  where task_id = 2 ;
+```
+
+
+### Validamos los resultados 
+```
+select * FROM maint.jobs where started_at::date = current_date  and job_id = 1   ;
+select * FROM maint.analyze_tasks  where started_at::date = current_date and job_id = 1 order by task_id ;
+```
+
+**Salida esperada**
+```
+-[ RECORD 1 ]------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 1
+job_type           | SMART_USER_NORMAL
+maintenance_action | ANALYZE
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "min_rows": 1000, "force_rows": 50000, "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "parallel_workers": 4}
+status             | RUNNING
+tables_processed   | 2
+started_at         | 2026-08-25 20:49:59.110391+00
+ended_at           | 2026-08-25 20:50:00.131164+00
+
+
+-[ RECORD 1 ]---+------------------------------
+task_id         | 1
+job_id          | 1
+schema_name     | lab
+table_name      | sesiones
+total_filas     | 20000
+filas_afectadas | 18000
+drift_pct       | 90.00
+status          | SUCCESS
+child_pid       | 878786
+stage_number    | 1
+started_at      | 2026-08-25 20:49:59.118811+00
+ended_at        | 2026-08-25 20:50:00.127867+00
+error_log       | 
+-[ RECORD 2 ]---+------------------------------
+task_id         | 2
+job_id          | 1
+schema_name     | lab
+table_name      | carritos
+total_filas     | 10000
+filas_afectadas | 10000
+drift_pct       | 100.00
+status          | RUNNING
+child_pid       | 878787
+stage_number    | 1
+started_at      | 2026-08-25 20:49:59.122408+00
+ended_at        | 2026-08-25 20:50:00.129525+00
+error_log       |
+
+```
+
+
+
+
+### ejecutamos una tarea de vacuum.
+aqui el siguiente orquestador debe revisar los PID quedaron orquestadores con estatus running y hijos , 
+```
+  CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 5,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_chg_rows         => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_chg_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
+```
+**Salida esperada**
+```
+NOTICE:  [SELF-HEALING] Job 1 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
+NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  >>> INICIANDO FASE 1 DE 1 <<<
+INFO:  ---------------------------------------------------------
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 5 | Tablas procesadas: 0 / 0 (Sistema optimo)
+INFO:  Tiempo Total: 00:00:00.008835
+INFO:  =========================================================
+CALL
+```
+
+### Validamos los resultados 
+aqui unicamente cambiara el estatus aquellos orquestadores que no estan en pg_stat_activy y estan en estatus running o pending los que estan en  SUCCESS no los revisa y no los mueve.
+```
+select * FROM maint.jobs where started_at::date = current_date  and job_id = 1   ;
+select * FROM maint.analyze_tasks  where started_at::date = current_date and job_id = 1 order by task_id ;
+```
+
+**Salida esperada**
+```
+job_id             | 1
+job_type           | SMART_USER_NORMAL
+maintenance_action | ANALYZE
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "min_rows": 1000, "force_rows": 50000, "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "parallel_workers": 4}
+status             | ABORTED_ORPHAN
+tables_processed   | 1
+started_at         | 2026-08-25 20:49:59.110391+00
+ended_at           | 2026-08-25 21:05:53.455934+00
+
+-[ RECORD 1 ]---+---------------------------------------------
+task_id         | 1
+job_id          | 1
+schema_name     | lab
+table_name      | sesiones
+total_filas     | 20000
+filas_afectadas | 18000
+drift_pct       | 90.00
+status          | SUCCESS
+child_pid       | 878786
+stage_number    | 1
+started_at      | 2026-08-25 20:49:59.118811+00
+ended_at        | 2026-08-25 20:50:00.127867+00
+error_log       | 
+-[ RECORD 2 ]---+---------------------------------------------
+task_id         | 2
+job_id          | 1
+schema_name     | lab
+table_name      | carritos
+total_filas     | 10000
+filas_afectadas | 10000
+drift_pct       | 100.00
+status          | ABORTED_ORPHAN
+child_pid       | 878787
+stage_number    | 1
+started_at      | 2026-08-25 20:49:59.122408+00
+ended_at        | 2026-08-25 21:05:53.455716+00
+error_log       | Orchestrator process died or was superseded.
+
+```
+
+ 
+
+
+
+
+
+
 
 
 ---
