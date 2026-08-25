@@ -128,7 +128,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab'
+WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
 ```
 
@@ -189,14 +189,14 @@ CALL
 #### PASO 2: Verifica la Telemetría 
 Corroborar la información
 ```sql
- SELECT
+  SELECT
     schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab'
+WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
 ```
 
@@ -257,14 +257,14 @@ CALL
 ####  Verifica la Telemetría 
 Corroborar la información
 ```sql
- SELECT
+  SELECT
     schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab'
+WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
 ```
 
@@ -324,14 +324,14 @@ CALL
 ####  Verifica la Telemetría 
 Corroborar la información
 ```sql
- SELECT
+  SELECT
     schemaname,
     relname AS nombre_tabla,
     n_live_tup AS filas_vivas,
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab'
+WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
 ```
 
