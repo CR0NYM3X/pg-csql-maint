@@ -299,7 +299,7 @@ BEGIN
           )
           AND (
               (p_scope LIKE 'SMART%' AND (
-                  mf.force_maintenance = TRUE OR (
+                  /*mf.force_maintenance = TRUE OR*/ (
                       COALESCE(st.n_mod_since_analyze, 0) >= p_min_chg_rows AND (
                           ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100.0) >= p_threshold_pct 
                           OR (p_force_chg_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_chg_rows)
