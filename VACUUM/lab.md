@@ -75,37 +75,149 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 ---
  
 
+### Revisar los porcentajes de tuplas muertas
+```
+SELECT
+    schemaname,
+    relname AS nombre_tabla,
+    n_live_tup AS filas_vivas,
+    n_dead_tup AS filas_muertas,
+    n_mod_since_analyze AS filas_modificadas,
+    ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas_vacuum,
+    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct_analyze
+FROM pg_stat_user_tables
+WHERE     schemaname  = 'lab'
+ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
+```
+
+**Salida esperada**
+```
+ schemaname |     nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
+------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
+ lab        | demo_extreme_bloat    |       50000 |        450000 |            950000 |                      90.00 |            1900.00
+ lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00
+ lab        | demo_escudo_historial |       50001 |         49999 |            149999 |                      50.00 |             299.99
+ lab        | demo_vip_facturas     |       50000 |          9999 |             59999 |                      16.67 |             120.00
+ lab        | pedidos               |       20000 |          3000 |                 0 |                      13.04 |               0.00
+ lab        | inventario            |       20000 |          1200 |              1200 |                       5.66 |               6.00
+ lab        | clientes              |       20000 |           400 |               400 |                       1.96 |               2.00
+ lab        | carritos              |       10000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | sesiones              |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | logs_auditoria        |       22000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | envios                |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | pagos                 |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | detalle_pedidos       |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | productos             |       20000 |             0 |                 0 |                       0.00 |               0.00
+(14 rows)
+```
+
+
+
+
 #### Escenario 2: Mantenimiento Diario Inteligente
 
 > **Discurso para el cliente:** *"Es lunes de madrugada. Lanzamos el mantenimiento general. Observen cómo el orquestador detecta automáticamente la tabla con actualizaciones masivas (`demo_heavy_updates`), procesa sus tuplas muertas en segundo plano, pero respeta estrictamente nuestro escudo de seguridad, ignorando por completo la tabla crítica `demo_escudo_historial` a pesar de estar llena de basura."*
 
 ```sql
-CALL maint.sp_orchestrate_vacuum(
-    p_scope => 'SMART_USER',
-    p_profile => 'AGGRESSIVE',
-    p_parallel_workers => 4,
-    p_threshold_pct => 0.05,
-    p_verbose => TRUE
-);
-
 ---- Mantenimiento a todas las tablas Forzado
 CALL maint.sp_orchestrate_vacuum(
-    p_scope            => 'ALL_USER', --- ALL_USER, SMART_USER, CUSTOM_LIST , SMART_SYSTEM_USER , ALL_SYSTEM_USER, ALL_SYSTEM
-    p_profile          => 'BALANCED',
-    p_parallel_workers => 16,
-    p_cutoff_time      => NULL, -- puedes colocar la hora 
-    p_verbose          => TRUE,
-    p_threshold_pct    => 0,
-    p_min_dead_tup     => 0
+    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+    p_threshold_pct  => 60,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+    p_min_dead_rows   => 5000,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+    p_force_dead_rows => 50000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
 );
 
-
-
-
--- Demuestra que el escudo funcionó:
-SELECT table_name, status, error_log FROM maint.vacuum_tasks WHERE job_id = (SELECT MAX(job_id) FROM maint.jobs);
-
+ 
 ```
+
+**Salida esperada**
+```
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:      [>] LANZANDO [BALANCED] PID 765786 -> lab.demo_extreme_bloat
+INFO:      [✓] EXITO -> lab.demo_extreme_bloat
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 5 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.018093
+INFO:  =========================================================
+CALL
+```
+
+ 
+
+### Revisar los porcentajes de tuplas muertas
+```
+SELECT
+    schemaname,
+    relname AS nombre_tabla,
+    n_live_tup AS filas_vivas,
+    n_dead_tup AS filas_muertas,
+    n_mod_since_analyze AS filas_modificadas,
+    ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas_vacuum,
+    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct_analyze
+FROM pg_stat_user_tables
+WHERE     schemaname  = 'lab'
+ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
+```
+
+**Salida esperada**
+```
+ schemaname |     nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
+------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
+ lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00 --- Esta no se hizo porque cumplia con todo.
+ lab        | demo_escudo_historial |       50001 |         49999 |            149999 |                      50.00 |             299.99
+ lab        | demo_vip_facturas     |       50000 |          9999 |             59999 |                      16.67 |             120.00
+ lab        | pedidos               |       20000 |          3000 |                 0 |                      13.04 |               0.00
+ lab        | inventario            |       20000 |          1200 |              1200 |                       5.66 |               6.00
+ lab        | clientes              |       20000 |           400 |               400 |                       1.96 |               2.00
+ lab        | envios                |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | carritos              |       10000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | sesiones              |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | logs_auditoria        |       22000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
+ lab        | pagos                 |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | detalle_pedidos       |       20000 |             0 |                 0 |                       0.00 |               0.00
+ lab        | productos             |       20000 |             0 |                 0 |                       0.00 |               0.00
+(14 rows)
+```
+
+ 
+### Revisar los filtros aplicados 
+Aqui podemos ver que la tabla demo_heavy_updates del esquema lab, esta excluida de todos los mantenimientos (ANALYZE,VACUUM,VACUUM FULL Y REINDEX)
+al estar en true la columna is_ignored este excluye al objeto de cualquier mantenimiento.
+```sql
+select * from maint.filters;
+```
+**Salida esperada**
+```
+ filter_id | schema_name |     table_name     | maintenance_action | is_ignored | force_maintenance |          created_at           |          updated_at           | updated_by 
+-----------+-------------+--------------------+--------------------+------------+-------------------+-------------------------------+-------------------------------+------------
+         1 | lab         | demo_heavy_updates | ALL                | t          | f                 | 2026-08-24 23:50:54.445692+00 | 2026-08-24 23:50:54.445692+00 | postgres
+         2 | lab         | demo_extreme_bloat | ALL                | f          | t                 | 2026-08-24 23:50:54.445931+00 | 2026-08-24 23:50:54.445931+00 | postgres
+(2 rows)
+```
+
+### Igual si quieres puedes especificar que unicamente quieres excluir el vacuum. 
+```
+update maint.filters set maintenance_action = 'VACUUM' where filter_id in( 1,2) ;
+select * from maint.filters;
+ filter_id | schema_name |     table_name     | maintenance_action | is_ignored | force_maintenance |          created_at           |          updated_at           | updated_by 
+-----------+-------------+--------------------+--------------------+------------+-------------------+-------------------------------+-------------------------------+------------
+         2 | lab         | demo_extreme_bloat | VACUUM             | f          | t                 | 2026-08-24 23:50:54.445931+00 | 2026-08-24 23:50:54.445931+00 | postgres2
+         1 | lab         | demo_heavy_updates | VACUUM             | t          | f                 | 2026-08-24 23:50:54.445692+00 | 2026-08-24 23:50:54.445692+00 | postgres2
+(2 rows)
+```
+
+
+ 
+
 
 ---
  
