@@ -473,6 +473,250 @@ ORDER BY j.job_id DESC;
       1 | SMART_USER_NORMAL   | COMPLETED    |      2 |               0 |       0 | 1.02 seg | 21:56:55
 ```
 
+
+# Escenario 5: Simular una interrrupción en el orquetador y se quedo con status RUNNING
+Aqui simulamos un orquestador caido y que el  PID no esta en la vista pg_stat_activity,  pero resulto que el unico proceso hijo que alcanzo ejecutar ya estaba en  SUCCESS 
+por lo que el orquestador se coloca con estatus abortado y huerfano
+
+```sql
+update maint.jobs set status = 'RUNNING'  where job_id = 17 ;
+-- UPDATE 1
+```
+
+### Revisamos las tablas
+```sql
+select * FROM maint.jobs where started_at::date = current_date and    job_id = 17  ;
+select * FROM maint.vacuum_tasks  where  job_id = 17 ;
+```
+
+**Salida esperada**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 17
+job_type           | SMART_USER_BALANCED
+maintenance_action | VACUUM
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "BALANCED", "cutoff_time": null, "keep_history": true, "min_dead_tup": 10000, "threshold_pct": 5, "force_dead_tup": 40000, "parallel_workers": 4}
+status             | RUNNING
+tables_processed   | 1
+started_at         | 2026-08-25 17:22:27.681069+00
+ended_at           | 2026-08-25 19:19:27.853279+00
+
+-[ RECORD 1 ]------------------------------
+task_id     | 14
+job_id      | 17
+schema_name | lab
+table_name  | demo_heavy_updates
+n_live_tup  | 200000
+n_dead_tup  | 400000
+dead_pct    | 66.67
+status      | SUCCESS
+child_pid   | 859442
+started_at  | 2026-08-25 17:22:27.687482+00
+ended_at    | 2026-08-25 17:22:28.692742+00
+error_log   | 
+```
+
+
+### Ejecutamos un mantenimiento 
+```sql
+ 
+ CALL maint.sp_orchestrate_vacuum(
+    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+    p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+    p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+    p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+);
+```
+
+**Salida esperada**
+```
+NOTICE:  [SELF-HEALING] Job 17 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
+NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 26 | Tablas procesadas: 0 / 0 (Sistema optimo)
+INFO:  Tiempo Total: 00:00:00.010539
+INFO:  =========================================================
+CALL
+```
+ 
+
+### 
+```sql
+select * FROM maint.jobs where started_at::date = current_date and    job_id = 17  ;
+select * FROM maint.vacuum_tasks  where  job_id = 17 ;
+```
+**Salida esperada**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 17
+job_type           | SMART_USER_BALANCED
+maintenance_action | VACUUM
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "BALANCED", "cutoff_time": null, "keep_history": true, "min_dead_tup": 10000, "threshold_pct": 5, "force_dead_tup": 40000, "parallel_workers": 4}
+status             | ABORTED_ORPHAN
+tables_processed   | 1
+started_at         | 2026-08-25 17:22:27.681069+00
+ended_at           | 2026-08-25 19:21:27.582986+00
+
+-[ RECORD 1 ]------------------------------
+task_id     | 14
+job_id      | 17
+schema_name | lab
+table_name  | demo_heavy_updates
+n_live_tup  | 200000
+n_dead_tup  | 400000
+dead_pct    | 66.67
+status      | SUCCESS
+child_pid   | 859442
+started_at  | 2026-08-25 17:22:27.687482+00
+ended_at    | 2026-08-25 17:22:28.692742+00
+error_log   | 
+```
+
+
+
+
+---
+
+
+# Escenario 6: Simular una interrrupción en el orquetador y hijos
+Aqui simulamos un orquestador y hijo caido y  que el  PID no esta en la vista pg_stat_activity,  los dos se quedan con estatus RUNNING,
+y se coloca con estatus abortado y huerfano
+
+```sql
+update maint.jobs set status = 'RUNNING'  where job_id = 17 ;
+update maint.vacuum_tasks set status = 'RUNNING' where  job_id = 17 ;
+```
+
+### Revisamos las tablas
+```sql
+select * FROM maint.jobs where started_at::date = current_date and    job_id = 17  ;
+select * FROM maint.vacuum_tasks  where  job_id = 17 ;
+```
+
+**Salida esperada**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 17
+job_type           | SMART_USER_BALANCED
+maintenance_action | VACUUM
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "BALANCED", "cutoff_time": null, "keep_history": true, "min_dead_tup": 10000, "threshold_pct": 5, "force_dead_tup": 40000, "parallel_workers": 4}
+status             | RUNNING
+tables_processed   | 1
+started_at         | 2026-08-25 17:22:27.681069+00
+ended_at           | 2026-08-25 19:21:27.582986+00
+
+-[ RECORD 1 ]------------------------------
+task_id     | 14
+job_id      | 17
+schema_name | lab
+table_name  | demo_heavy_updates
+n_live_tup  | 200000
+n_dead_tup  | 400000
+dead_pct    | 66.67
+status      | RUNNING
+child_pid   | 859442
+started_at  | 2026-08-25 17:22:27.687482+00
+ended_at    | 2026-08-25 17:22:28.692742+00
+error_log   | 
+```
+
+
+### Ejecutamos un mantenimiento 
+```sql
+ 
+ CALL maint.sp_orchestrate_vacuum(
+    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+    p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+    p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+    p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+);
+```
+
+**Salida esperada**
+```
+NOTICE:  [SELF-HEALING] Job 17 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
+NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
+INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 27 | Tablas procesadas: 0 / 0 (Sistema optimo)
+INFO:  Tiempo Total: 00:00:00.007794
+INFO:  =========================================================
+CALL
+```
+ 
+
+### 
+```sql
+select * FROM maint.jobs where started_at::date = current_date and    job_id = 17  ;
+select * FROM maint.vacuum_tasks  where  job_id = 17 ;
+```
+**Salida esperada**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 17
+job_type           | SMART_USER_BALANCED
+maintenance_action | VACUUM
+orchestrator_pid   | 855252
+execution_params   | {"scope": "SMART_USER", "profile": "BALANCED", "cutoff_time": null, "keep_history": true, "min_dead_tup": 10000, "threshold_pct": 5, "force_dead_tup": 40000, "parallel_workers": 4}
+status             | ABORTED_ORPHAN
+tables_processed   | 0
+started_at         | 2026-08-25 17:22:27.681069+00
+ended_at           | 2026-08-25 19:31:34.339332+00
+
+-[ RECORD 1 ]---------------------------------------------
+task_id     | 14
+job_id      | 17
+schema_name | lab
+table_name  | demo_heavy_updates
+n_live_tup  | 200000
+n_dead_tup  | 400000
+dead_pct    | 66.67
+status      | ABORTED_ORPHAN
+child_pid   | 859442
+started_at  | 2026-08-25 17:22:27.687482+00
+ended_at    | 2026-08-25 19:31:34.339207+00
+error_log   | Orchestrator process died or was superseded.
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ --- 
+
+
+
+
 ###   Querys extras:
 
 ```sql
