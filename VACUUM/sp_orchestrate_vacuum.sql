@@ -325,7 +325,7 @@ BEGIN
       )
       AND (
           (p_scope LIKE 'SMART%' AND (
-              mf.force_maintenance = TRUE OR (
+              /*mf.force_maintenance = TRUE OR*/ (
                   st.n_dead_tup >= p_min_dead_rows AND (
                       ((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100.0) >= p_threshold_pct
                       OR (p_force_dead_rows IS NOT NULL AND st.n_dead_tup >= p_force_dead_rows)
