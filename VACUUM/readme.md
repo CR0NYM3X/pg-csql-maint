@@ -193,7 +193,29 @@ CALL maint.sp_orchestrate_vacuum(
 > ⚠️ **ADVERTENCIA CRÍTICA DE RECURSOS (I/O & RAM):**
 > * **Saturación de Disco (`vacuum_cost_delay = 0`):** Ajustar el delay a `0` quita por completo el freno de disco. **Nunca uses este valor en horario laboral**, ya que consumirá todo el ancho de banda del almacenamiento e incrementará drásticamente los tiempos de respuesta de tu aplicación.
 > * **Riesgo de Colapso de Memoria (OOM Killer):** Recuerda que `maintenance_work_mem` se multiplica por la concurrencia. Si configuras `2GB` de RAM y ejecutas con `p_parallel_workers => 4`, el proceso usará hasta **8 GB de RAM real de golpe**. Si el servidor se queda sin memoria, el Kernel de Linux (OOM Killer) matará el proceso de PostgreSQL.
-> 
-> 
+ 
+💡 **Recomendación:** Usa el tuning de sesión dinámico **únicamente en ventanas de mantenimiento nocturnas o fines de semana**. Para la rutina diaria automática vía `pg_cron`, no ejecutes ningún `SET` previo; deja que el orquestador opere con los valores por defecto (`reset_val`) del servidor para no impactar la operación.
 
-💡 **Recomendación del Escuadrón:** Usa el tuning de sesión dinámico **únicamente en ventanas de mantenimiento nocturnas o fines de semana**. Para la rutina diaria automática vía `pg_cron`, no ejecutes ningún `SET` previo; deja que el orquestador opere con los valores por defecto (`reset_val`) del servidor para no impactar la operación.
+---
+
+### 📊 MATRIZ DE ESTADOS PARA EL MÓDULO `VACUUM`
+
+#### 1. Para la Tabla Cabecera Maestra (`maint.jobs`):
+
+* **`RUNNING`**: El orquestador principal (el Job Padre) está actualmente en ejecución activa despachando o monitoreando trabajadores de `VACUUM`.
+* **`COMPLETED`**: El orquestador terminó todo el ciclo de trabajo de manera óptima, ya sea porque procesó todas las tareas exitosamente o porque no hubo tablas candidatas en el sistema (Sistema óptimo).
+* **`COMPLETED_WITH_CUTOFF`**: El orquestador alcanzó la hora límite (`p_cutoff_time`) definida por el DBA. Detuvo la inyección de nuevas tareas, cerró limpiamente las que estaban en ejecución y cerró el Job.
+* **`ABORTED_ORPHAN`**: El Job Padre sufrió una muerte súbita (ej. Caída de red del cliente, Servidor reiniciado, `SIGKILL -9`). El orquestador detectó la ausencia del PID en la siguiente ejecución y selló el Job de forma forense.
+* **`CANCELLED_BY_USER`**: Interrupción manual controlada (ej. `CTRL+C` atrapado limpiamente). *(Nota: En `VACUUM` este estado es menos frecuente debido a que la interrupción suele generar el estado Huérfano si el Padre muere de golpe, pero el catálogo lo soporta por homologación con la suite global).*
+
+ 
+#### 2. Para la Cola de Tareas Hijas (`maint.vacuum_tasks`):
+
+* **`PENDING`**: La tabla candidata superó los filtros matemáticos (o fue forzada por `maint.filters`) y está en la cola, esperando que un worker se libere.
+* **`RUNNING`**: La tabla está siendo intervenida en este milisegundo por un worker asíncrono (`pg_background`). El campo `child_pid` contiene la firma del trabajador activo.
+* **`SUCCESS`**: El worker de fondo ejecutó el `VACUUM (Opciones) esquema.tabla` de manera exitosa y el recolector forense recuperó el resultado.
+* **`FAILED`**: La ejecución del comando `VACUUM` sobre esa tabla en particular falló (por ejemplo, permisos insuficientes, objeto eliminado en caliente, etc.). El error nativo queda grabado inmutablemente en la columna `error_log`.
+* **`SKIPPED_TIME_LIMIT`**: La tarea estaba en `PENDING` cuando el orquestador activó el freno de emergencia por tiempo (`p_cutoff_time`). La tarea no se ejecutó.
+* **`ABORTED_ORPHAN`**: La tarea quedó congelada en `RUNNING` cuando el proceso Padre murió, y fue reconciliada (sellada) por el bloque de auto-sanación en la siguiente ejecución del orquestador.
+
+ 
