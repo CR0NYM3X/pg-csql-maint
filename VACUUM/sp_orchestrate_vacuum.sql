@@ -158,7 +158,7 @@ ON maint.vacuum_tasks (job_id, status, task_id);
 /* =========================================================================================
    PROCEDIMIENTO: maint.sp_orchestrate_vacuum
 ========================================================================================= */
--- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_vacuum(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, INT);
+-- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_vacuum(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, INT, INT, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
     p_scope VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM'
     p_profile VARCHAR DEFAULT 'BALANCED',        -- 'LIGHT', 'BALANCED', 'AGGRESSIVE'
@@ -177,10 +177,11 @@ DECLARE
     v_raw_sql TEXT; v_options_str TEXT;
     v_start_time TIMESTAMPTZ := clock_timestamp(); r_finished RECORD;
     v_success_count INT := 0;
-    
+    v_healed_count INT := 0;
     -- Variables para lectura de perfil dinámico y telemetría
     r_profile RECORD;
     v_execution_params JSONB;
+    v_orphaned_job RECORD;
 
     -- Variables para interceptar SETs locales y transmitirlos a los workers (TU LÓGICA INTACTA)
     v_param RECORD;
@@ -215,65 +216,60 @@ BEGIN
 
     -- 1-B. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL DE JOBS Y WORKERS HUÉRFANOS
     -- Paso A: Identificar Jobs cuyo Padre murió Y cuyos Hijos ya no están activos en pg_stat_activity
-    WITH dead_parent_jobs AS (
+    FOR v_orphaned_job IN (
         SELECT j.job_id 
         FROM maint.jobs j
         WHERE j.status = 'RUNNING' 
           AND j.maintenance_action = 'VACUUM'
-          -- CANDADO DE PADRE: Valida PID + Firma de Código + Estado Activo (Compatible con pg_cron y CLI)
+          -- El PID que creó el Job ya no existe en pg_stat_activity
+          -- O si existe, es una sesión distinta que ya no está ejecutando este orquestador
           AND NOT EXISTS (
               SELECT 1 FROM pg_stat_activity a 
               WHERE a.pid = j.orchestrator_pid 
-                AND a.query ILIKE '%sp_orchestrate_vacuum%'
+                AND a.pid != pg_backend_pid()  -- Evita evaluarse a sí mismo
                 AND a.state != 'idle'
           )
-          -- CANDADO DE HIJOS: Valida que no queden trabajadores pg_background procesando tareas de vacuum
+          -- Ningún worker de fondo está ejecutando tareas para este Job
           AND NOT EXISTS (
               SELECT 1 FROM maint.vacuum_tasks t
               JOIN pg_stat_activity a ON a.pid = t.child_pid
               WHERE t.job_id = j.job_id 
                 AND t.status = 'RUNNING'
                 AND a.backend_type = 'pg_background'
-                AND a.query ILIKE 'VACUUM %'
           )
-    )
-    -- Actualizar tareas congeladas de Jobs huérfanos
-    UPDATE maint.vacuum_tasks 
-    SET status = 'ABORTED_ORPHAN', 
-        ended_at = clock_timestamp(),
-        error_log = 'Orchestrator process died. Task completed or abandoned without live collector.'
-    WHERE status IN ('PENDING', 'RUNNING')
-      AND job_id IN (SELECT job_id FROM dead_parent_jobs);
+        FOR UPDATE OF j SKIP LOCKED
+    ) LOOP
+        -- Paso 1: Abortar tareas pendientes o en ejecución del Job huérfano
+        UPDATE maint.vacuum_tasks 
+        SET status = 'ABORTED_ORPHAN', 
+            ended_at = clock_timestamp(),
+            error_log = 'Orchestrator process died or was superseded.'
+        WHERE job_id = v_orphaned_job.job_id 
+          AND status IN ('PENDING', 'RUNNING');
 
-    -- Paso B: Cerrar y adjudicar el estado final en el Job Padre
-    WITH dead_parent_jobs AS (
-        SELECT j.job_id 
-        FROM maint.jobs j
-        WHERE j.status = 'RUNNING' 
-          AND j.maintenance_action = 'VACUUM'
-          AND NOT EXISTS (
-              SELECT 1 FROM pg_stat_activity a 
-              WHERE a.pid = j.orchestrator_pid 
-                AND a.query ILIKE '%sp_orchestrate_vacuum%'
-                AND a.state != 'idle'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM maint.vacuum_tasks t
-              JOIN pg_stat_activity a ON a.pid = t.child_pid
-              WHERE t.job_id = j.job_id 
-                AND t.status = 'RUNNING'
-                AND a.backend_type = 'pg_background'
-                AND a.query ILIKE 'VACUUM %'
-          )
-    )
-    UPDATE maint.jobs 
-    SET status = 'ABORTED_ORPHAN', 
-        ended_at = clock_timestamp(),
-        tables_processed = (
-            SELECT COUNT(*) FROM maint.vacuum_tasks 
-            WHERE job_id = maint.jobs.job_id AND status = 'SUCCESS'
-        )
-    WHERE job_id IN (SELECT job_id FROM dead_parent_jobs);
+        -- Paso 2: Sellar el Job Padre
+        UPDATE maint.jobs 
+        SET status = 'ABORTED_ORPHAN', 
+            ended_at = clock_timestamp(),
+            tables_processed = (
+                SELECT COUNT(*) FROM maint.vacuum_tasks 
+                WHERE job_id = v_orphaned_job.job_id AND status = 'SUCCESS'
+            )
+        WHERE job_id = v_orphaned_job.job_id;
+
+        -- Incrementar contador de recuperaciones
+        v_healed_count := v_healed_count + 1;
+
+        -- Notificación específica por Job recuperado (Modo Verbose)
+        IF p_verbose THEN
+            RAISE NOTICE '[SELF-HEALING] Job % detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.', v_orphaned_job.job_id;
+        END IF;
+    END LOOP;
+
+    -- Mensaje de resumen en consola si se recuperó al menos un Job
+    IF v_healed_count > 0 THEN
+        RAISE NOTICE '[SELF-HEALING] Se auto-sanaron y cerraron % trabajo(s) huérfano(s) en maint.jobs.', v_healed_count;
+    END IF;
 
     COMMIT;
 
