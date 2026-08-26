@@ -221,9 +221,9 @@ CALL maint.sp_pgstattuple(
 **Salida esperada**
 ```
 INFO:  =========================================================
-INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4 - LOGIC: OR | THRESHOLD: 5120.00 KB)
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 1169, Deep Scans: 0, Requiere VF: 462
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
 CALL
 ```
 
@@ -453,17 +453,22 @@ CALL maint.sp_orchestrate_vacuum_full(
 **Salida Esperada:**
 
 ```text
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
 INFO:  =========================================================
-INFO:      [>] ENCOLADO SMART -> lab.demo_extreme_bloat | Bloat: 218112.00 KB | Dias: 5
-INFO:      [>] LANZANDO [VACUUM FULL] PID 861204 -> lab.demo_extreme_bloat (OLD NODE: 245801)
-INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_extreme_bloat (NODE: 245801 -> 245842)
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1010119 -> lab.demo_extreme_bloat (OLD NODE: 1807252) | Bloat: 239901.19 KB | Dias: 5
+INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_extreme_bloat (NODE: 1807252 -> 1807342)
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 1 | Procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:02.145892
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 3 | Procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:02.029293
 INFO:  =========================================================
+CALL
 
 ```
 
@@ -536,6 +541,21 @@ CALL maint.sp_orchestrate_vacuum_full(
 
 ```
 
+**Salida esperada**
+```
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
+INFO:  ALCANCE: CUSTOM_LIST | MODO: FORCE_SURGERY | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
+INFO:  =========================================================
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1010379 -> lab.demo_vip_facturas (OLD NODE: 1807270) | Bloat: 511.34 KB | Dias: 0
+INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_vip_facturas (NODE: 1807270 -> 1807354)
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 4 | Procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:02.013515
+INFO:  =========================================================
+CALL
+
+```
 ---
 
 ### 📊 ESCENARIO 5: AUDITORÍA FORENSE Y VERIFICACIÓN DE INODOS (`relfilenode`)
@@ -569,37 +589,255 @@ ORDER BY task_id ASC;
 **Salida Esperada:**
 
 ```text
- task_id | job_id | schema_name |     table_name     | bloat_pct_evaluado | bloat_kb_evaluado | Nodo Físico ANTES | Nodo Físico DESPUÉS |   verificacion_fisica   | status  | child_pid |    duracion     
----------+--------+-------------+--------------------+--------------------+-------------------+-------------------+---------------------+-------------------------+---------+-----------+-----------------
-       1 |      1 | lab         | demo_extreme_bloat |              90.00 |         218112.00 |            245801 |              245842 | ✓ REESCRITURA CONFIRMADA | SUCCESS |    861204 | 00:00:01.892012
-       2 |      2 | lab         | demo_heavy_updates |              66.67 |          11264.00 |            245812 |              245851 | ✓ REESCRITURA CONFIRMADA | SUCCESS |    861310 | 00:00:00.812301
-       3 |      3 | lab         | demo_vip_facturas  |               0.00 |              0.00 |            245821 |              245860 | ✓ REESCRITURA CONFIRMADA | SUCCESS |    861405 | 00:00:00.312010
+ task_id | job_id | schema_name |     table_name     | bloat_pct_evaluado | bloat_kb_evaluado | Nodo Físico ANTES | Nodo Físico DESPUÉS |   verificacion_fisica    | status  | child_pid |    duracion     
+---------+--------+-------------+--------------------+--------------------+-------------------+-------------------+---------------------+--------------------------+---------+-----------+-----------------
+       4 |      3 | lab         | demo_extreme_bloat |              89.96 |         239901.19 |           1807252 |             1807342 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1010119 | 00:00:02.006412
+       5 |      4 | lab         | demo_vip_facturas  |              20.04 |            511.34 |           1807270 |             1807354 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1010379 | 00:00:02.00614
 
 ```
 
-#### Consulta B: Evaluación del Tamaño Liberado en Disco
-
-```sql
+### Revisar las estadisticas de manrea manual.  
+```
 SELECT 
-    c.relname AS nombre_tabla,
-    pg_size_pretty(pg_relation_size(c.oid)) AS tamano_actual_post_vf
-FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    n.nspname AS schema_name,
+    c.relname AS table_name,
+    ROUND((pg_relation_size(c.oid) / 1024.0 / 1024.0)::numeric, 2) AS total_mb,
+    ROUND((app.table_len / 1024.0 / 1024.0)::numeric, 2) AS scan_mb,
+    ROUND(app.scanned_percent::numeric, 2) AS scanned_pct,
+    app.approx_tuple_count AS live_tuples,
+    ROUND((app.approx_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS live_mb,
+    ROUND(app.approx_tuple_percent::numeric, 2) AS live_pct,
+    app.dead_tuple_count AS dead_tuples,
+    ROUND((app.dead_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS dead_mb,
+    ROUND(app.dead_tuple_percent::numeric, 2) AS dead_pct,
+    ROUND((app.approx_free_space / 1024.0 / 1024.0)::numeric, 2) AS free_mb,
+    ROUND(app.approx_free_percent::numeric, 2) AS free_pct,
+    ROUND((app.dead_tuple_percent + app.approx_free_percent)::numeric, 2) AS total_bloat_pct
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL pgstattuple_approx(c.oid) app
 WHERE n.nspname = 'lab'
-ORDER BY pg_relation_size(c.oid) DESC;
+  AND c.relkind IN ('r', 'm')
+  AND c.relname IN (
+      'demo_extreme_bloat',
+      'demo_heavy_updates',
+      'demo_vip_facturas',
+      'demo_escudo_historial'
+  )
+ORDER BY total_bloat_pct DESC;
+```
+
+**Salida esperada**
+```
+ schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
+-------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
+ lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |           49.87
+ lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |           49.81
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
+(4 rows)
+```
+
+
+
+----
+
+
+
+
+### 📍 ESCENARIO  : Forzaremos todo lo que pese igual o mas de 7MB se le realizara vacuum full 
+ 
+```sql
+
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'ALL_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         => NULL,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 5.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => 7,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+
 
 ```
 
-**Salida Esperada (Demuestra la recuperación física de Megabytes en disco):**
+**Salida esperada**
+```
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 5120.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 7
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
+INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  =========================================================
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1012152 -> lab.demo_heavy_updates (OLD NODE: 1807261) | Bloat: 7614.53 KB | Dias: 0
+INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_heavy_updates (NODE: 1807261 -> 1807387)
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 6 | Procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:02.027926
+INFO:  =========================================================
+CALL
+```
 
-```text
-    nombre_tabla      | tamano_actual_post_vf 
-----------------------+-----------------------
- demo_escudo_historial| 5888 KB               -- Quedó intacta por estar en Lista Negra
- demo_extreme_bloat   | 3920 KB               -- Pasó de 243 MB a 3.9 MB (Recuperación masiva)
- demo_heavy_updates   | 3800 KB               -- Pasó de 11 MB a 3.8 MB
- demo_vip_facturas    | 2200 KB               -- Reestructurada
+### Validar proceso hijo
+```
+select * from maint.vacuum_full_tasks where job_id = 6; 
+```
 
 ```
+-[ RECORD 1 ]------+------------------------------
+task_id            | 6
+job_id             | 6
+schema_name        | lab
+table_name         | demo_heavy_updates
+bloat_pct_evaluado | 49.81
+bloat_kb_evaluado  | 7614.53
+sustained_days_met | 0
+old_relfilenode    | 1807261
+new_relfilenode    | 1807387
+status             | SUCCESS
+child_pid          | 1012152
+started_at         | 2026-08-26 10:00:37.548252+00
+ended_at           | 2026-08-26 10:00:39.555145+00
+error_log    
+```
+
+---
+---
+
+# Escenario: simulación de interrupción de proesos.
+
+```
+update maint.jobs set status = 'RUNNING' where job_id = 6;
+update maint.vacuum_full_tasks  set status = 'RUNNING' where job_id = 6;
+```
+
+### Validar
+
+```
+select * from maint.jobs where job_id = 6;
+select * from maint.vacuum_full_tasks where job_id = 6;
+```
+
+**Salida**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 6
+job_type           | ALL_USER_SMART_SURGERY
+maintenance_action | VACUUM_FULL
+orchestrator_pid   | 1005502
+execution_params   | {"scope": "ALL_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
+status             | RUNNING
+tables_processed   | 1
+started_at         | 2026-08-26 10:00:37.544795+00
+ended_at           | 2026-08-26 10:00:39.556694+00
+
+ 
+-[ RECORD 1 ]------+------------------------------
+task_id            | 6
+job_id             | 6
+schema_name        | lab
+table_name         | demo_heavy_updates
+bloat_pct_evaluado | 49.81
+bloat_kb_evaluado  | 7614.53
+sustained_days_met | 0
+old_relfilenode    | 1807261
+new_relfilenode    | 1807387
+status             | RUNNING
+child_pid          | 1012152
+started_at         | 2026-08-26 10:00:37.548252+00
+ended_at           | 2026-08-26 10:00:39.555145+00
+error_log          | 
+```
+
+### Ejecutar orquestador
+```
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'ALL_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         => NULL,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 5.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => 7,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+```
+
+**Salida**
+```
+NOTICE:  [SELF-HEALING] Job 6 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
+NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 5120.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 6
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
+INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  =========================================================
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 7 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
+CALL
+```
+
+
+
+### Validar
+
+```
+select * from maint.jobs where job_id = 6;
+select * from maint.vacuum_full_tasks where job_id = 6;
+```
+
+**Salida**
+```
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+job_id             | 6
+job_type           | ALL_USER_SMART_SURGERY
+maintenance_action | VACUUM_FULL
+orchestrator_pid   | 1005502
+execution_params   | {"scope": "ALL_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
+status             | ABORTED_ORPHAN
+tables_processed   | 0
+started_at         | 2026-08-26 10:00:37.544795+00
+ended_at           | 2026-08-26 10:20:56.691912+00
+
+ 
+-[ RECORD 1 ]------+---------------------------------------------
+task_id            | 6
+job_id             | 6
+schema_name        | lab
+table_name         | demo_heavy_updates
+bloat_pct_evaluado | 49.81
+bloat_kb_evaluado  | 7614.53
+sustained_days_met | 0
+old_relfilenode    | 1807261
+new_relfilenode    | 1807387
+status             | ABORTED_ORPHAN
+child_pid          | 1012152
+started_at         | 2026-08-26 10:00:37.548252+00
+ended_at           | 2026-08-26 10:20:56.691702+00
+error_log          | Orchestrator process died or was superseded.
+
+```
+
+---
+
 
 #### Consulta C: Bitácora Maestra de Jobs (`maint.jobs`)
 
