@@ -327,6 +327,7 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id BIGINT; v_task_id BIGINT; v_schema TEXT; v_table TEXT; v_child_pid INT;
+    v_bloat_kb_eval NUMERIC(14,2); v_days_met INT; -- Variables para consolidación de salida en logs
     r_table RECORD; r_finished RECORD;
     v_hist_total INT; v_hist_true INT;
     v_active_workers INT := 0; v_pending_tasks INT; v_total_tasks INT := 0; v_success_count INT := 0;
@@ -466,7 +467,7 @@ BEGIN
     COMMIT;
 
     -- =====================================================================
-    -- 3. POBLAR COLA CON TELEMETRÍA FRESCA DE HOY
+    -- 3. POBLAR COLA CON TELEMETRÍA FRESCA DE HOY (ENCOLADO SILENCIOSO)
     -- =====================================================================
     FOR r_table IN (
         SELECT t.schema_name, t.table_name, t.total_bloat_kb, t.total_bloat_pct
@@ -495,7 +496,6 @@ BEGIN
                 INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status)
                 VALUES (v_job_id, r_table.schema_name, r_table.table_name, r_table.total_bloat_pct, r_table.total_bloat_kb, 0, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
-                IF p_verbose THEN RAISE INFO '    [>] ENCOLADO BYPASS (FORCE BLOAT % KB) -> %.% | Bloat: % KB', v_force_bloat_kb, r_table.schema_name, r_table.table_name, r_table.total_bloat_kb; END IF;
 
             ELSIF (
                 (v_op_upper = 'AND' AND r_table.total_bloat_pct >= p_bloat_pct_threshold AND r_table.total_bloat_kb >= v_bloat_kb_threshold) OR
@@ -513,7 +513,6 @@ BEGIN
                     INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status)
                     VALUES (v_job_id, r_table.schema_name, r_table.table_name, r_table.total_bloat_pct, r_table.total_bloat_kb, v_hist_total, 'PENDING');
                     v_total_tasks := v_total_tasks + 1;
-                    IF p_verbose THEN RAISE INFO '    [>] ENCOLADO SMART -> %.% | Bloat: % KB | Dias: %', r_table.schema_name, r_table.table_name, r_table.total_bloat_kb, v_hist_total; END IF;
                 END IF;
             END IF;
         END IF;
@@ -578,11 +577,12 @@ BEGIN
         
         IF v_active_workers = 0 AND v_pending_tasks = 0 THEN EXIT; END IF;
 
-        -- D. DESPACHADOR CON CAPTURA DE INODO PREVIO
+        -- D. DESPACHADOR ENRIQUECIDO (CONTIENE BLOAT Y DÍAS EN EL LANZAMIENTO)
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
-            SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table 
+            SELECT task_id, schema_name, table_name, bloat_kb_evaluado, sustained_days_met 
+            INTO v_task_id, v_schema, v_table, v_bloat_kb_eval, v_days_met 
             FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
@@ -600,7 +600,9 @@ BEGIN
                 UPDATE maint.vacuum_full_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; 
                 COMMIT;
 
-                IF p_verbose THEN RAISE INFO '    [>] LANZANDO [VACUUM FULL] PID % -> %.% (OLD NODE: %)', v_child_pid, v_schema, v_table, v_old_node; END IF;
+                IF p_verbose THEN 
+                    RAISE INFO '    [>] LANZANDO [VACUUM FULL] PID % -> %.% (OLD NODE: %) | Bloat: % KB | Dias: %', v_child_pid, v_schema, v_table, v_old_node, v_bloat_kb_eval, v_days_met; 
+                END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
             END IF;
         END LOOP;
