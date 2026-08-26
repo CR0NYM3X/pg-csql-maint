@@ -839,6 +839,255 @@ error_log          | Orchestrator process died or was superseded.
 ---
 
 
+# Pruebas de historial 
+
+### Revisar las estadisticas de manrea manual.  
+```
+SELECT 
+    n.nspname AS schema_name,
+    c.relname AS table_name,
+    ROUND((pg_relation_size(c.oid) / 1024.0 / 1024.0)::numeric, 2) AS total_mb,
+    ROUND((app.table_len / 1024.0 / 1024.0)::numeric, 2) AS scan_mb,
+    ROUND(app.scanned_percent::numeric, 2) AS scanned_pct,
+    app.approx_tuple_count AS live_tuples,
+    ROUND((app.approx_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS live_mb,
+    ROUND(app.approx_tuple_percent::numeric, 2) AS live_pct,
+    app.dead_tuple_count AS dead_tuples,
+    ROUND((app.dead_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS dead_mb,
+    ROUND(app.dead_tuple_percent::numeric, 2) AS dead_pct,
+    ROUND((app.approx_free_space / 1024.0 / 1024.0)::numeric, 2) AS free_mb,
+    ROUND(app.approx_free_percent::numeric, 2) AS free_pct,
+    ROUND((app.dead_tuple_percent + app.approx_free_percent)::numeric, 2) AS total_bloat_pct
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL pgstattuple_approx(c.oid) app
+WHERE n.nspname = 'lab'
+  AND c.relkind IN ('r', 'm')
+  AND c.relname IN (
+      'demo_extreme_bloat',
+      'demo_heavy_updates',
+      'demo_vip_facturas',
+      'demo_escudo_historial'
+  )
+ORDER BY total_bloat_pct DESC;
+```
+
+**Salida esperada**
+```
+ schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
+-------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
+ lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |           49.87
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
+ lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |            0.06
+(4 rows)
+```
+
+
+#### validamos unicamente demo_extreme_bloat
+
+```sql
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+FROM maint.pgstattuple 
+WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
+table_name IN ('demo_escudo_historial' )
+ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+```
+
+**Salida esperada**
+```
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+-----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
+ 2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+(4 rows)
+```
+
+
+### Borramos el filtro 
+```
+delete  from maint.filters  where table_name = 'demo_escudo_historial';
+```
+
+### Ejecutamos el mantenimiento 
+No seberia encontrar esto debido a que los ultimos 5 días solo el 
+```
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'ALL_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         => NULL,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 2.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => 7,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+```
+
+**Salida esperada**
+```
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 2048.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 4
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
+INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  =========================================================
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 11 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
+CALL
+```
+
+### Validamos las metricas
+el escaneo de hoy lo colocomo como requiere_vf
+```
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+FROM maint.pgstattuple 
+WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
+table_name IN ('demo_escudo_historial' )
+ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+```
+**Salida esperada**
+```
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+-----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
+ 2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-08-26      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+(5 rows)
+```
+
+
+### Manipulamos el historial para que le haga el mantenimiento y consultamos las metricas 
+```
+update  maint.pgstattuple set requiere_vf = true  where evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and table_name IN ('demo_escudo_historial' )
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+FROM maint.pgstattuple 
+WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
+table_name IN ('demo_escudo_historial' )
+ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+```
+
+**Salida esperada**
+```
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+-----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
+ 2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+ 2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+ 2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+ 2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+ 2026-08-26      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+```
+
+
+
+### Ejecutamos el mantenimiento 
+No seberia encontrar esto debido a que los ultimos 5 días solo el 
+```
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'ALL_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         => NULL,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 2.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => 7,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+```
+
+**Salida esperada**
+```
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 2048.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
+INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  =========================================================
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1077106 -> lab.demo_escudo_historial (OLD NODE: 1807279) | Bloat: 2349.72 KB | Dias: 5
+INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_escudo_historial (NODE: 1807279 -> 1808265)
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 13 | Procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:02.031741
+INFO:  =========================================================
+CALL
+```
+
+### Revisar las estadisticas de manrea manual.  
+```
+SELECT 
+    n.nspname AS schema_name,
+    c.relname AS table_name,
+    ROUND((pg_relation_size(c.oid) / 1024.0 / 1024.0)::numeric, 2) AS total_mb,
+    ROUND((app.table_len / 1024.0 / 1024.0)::numeric, 2) AS scan_mb,
+    ROUND(app.scanned_percent::numeric, 2) AS scanned_pct,
+    app.approx_tuple_count AS live_tuples,
+    ROUND((app.approx_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS live_mb,
+    ROUND(app.approx_tuple_percent::numeric, 2) AS live_pct,
+    app.dead_tuple_count AS dead_tuples,
+    ROUND((app.dead_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS dead_mb,
+    ROUND(app.dead_tuple_percent::numeric, 2) AS dead_pct,
+    ROUND((app.approx_free_space / 1024.0 / 1024.0)::numeric, 2) AS free_mb,
+    ROUND(app.approx_free_percent::numeric, 2) AS free_pct,
+    ROUND((app.dead_tuple_percent + app.approx_free_percent)::numeric, 2) AS total_bloat_pct
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL pgstattuple_approx(c.oid) app
+WHERE n.nspname = 'lab'
+  AND c.relkind IN ('r', 'm')
+  AND c.relname IN (
+      'demo_extreme_bloat',
+      'demo_heavy_updates',
+      'demo_vip_facturas',
+      'demo_escudo_historial'
+  )
+ORDER BY total_bloat_pct DESC;
+```
+
+**Salida esperada**
+Aqui como vemos la tabla demo_escudo_historial ya se hizo vacuum full con exito 
+```
+ schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
+-------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
+ lab         | demo_escudo_historial |     2.30 |    2.30 |      100.00 |       40001 |    1.98 |    86.07 |           0 |    0.00 |     0.00 |    0.01 |     0.34 |            0.34
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
+ lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |            0.06
+(4 rows)
+```
+
+----
+
+
+
+
+
+
+
+
+
+
+
+
+
 #### Consulta C: Bitácora Maestra de Jobs (`maint.jobs`)
 
 ```sql
