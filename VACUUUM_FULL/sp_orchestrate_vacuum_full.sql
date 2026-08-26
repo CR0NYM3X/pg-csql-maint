@@ -462,7 +462,7 @@ BEGIN
     );
 
     INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
-    VALUES (p_scope || '_' || v_profile_upper || '_SURGERY', 'VACUUM_FULL', pg_backend_pid(), v_execution_params, 'RUNNING') 
+    VALUES (p_scope || '_' || v_profile_upper , 'VACUUM_FULL', pg_backend_pid(), v_execution_params, 'RUNNING') 
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
