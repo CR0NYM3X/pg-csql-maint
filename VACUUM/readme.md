@@ -89,14 +89,16 @@ La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu con
 SELECT cron.schedule_in_database('vanguard_daily_vacuum', '0 2 * * *', 
 $$ 
   CALL maint.sp_orchestrate_vacuum(
-      p_scope            => 'SMART_USER',    -- Evalúa solo esquemas de usuario
-      p_profile          => 'BALANCED',      -- Limpieza de índices automática (Lee maint.vacuum_profiles)
-      p_parallel_workers => 4,               -- Limpia hasta 4 tablas en simultáneo
-      p_cutoff_time      => '05:30:00'::TIME,-- [KILL SWITCH] Aborta cola si dan las 5:30 AM
-      p_verbose          => FALSE,           -- Silencioso (Ideal para ejecución en background/cron)
-      p_threshold_pct    => 5.00,            -- Umbral: Exige > 5% de basura para encolar la tabla
-      p_min_dead_tup     => 5000             -- Filtro: Ignora tablas con menos de 5,000 tuplas muertas
-  ); 
+      p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+      p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+      p_cutoff_time    => '06:00:00'::TIME,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+      p_verbose        => FALSE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+      p_min_dead_rows  => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+      p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+      p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+  );
 $$, 
 'mi_base_de_datos', 'postgres', true);
 
@@ -112,15 +114,17 @@ $$,
 -- Lanza el proceso como un fantasma en el sistema operativo y te devuelve el control de la consola
 SELECT * FROM public.pg_background_launch(
     $$
-      CALL maint.sp_orchestrate_vacuum(
-          p_scope            => 'CUSTOM_LIST', -- Solo procesa tablas VIP marcadas en maint.filters
-          p_profile          => 'AGGRESSIVE',  -- Inyecta hilos paralelos y actualiza estadísticas
-          p_parallel_workers => 8,             -- Máxima potencia de I/O para terminar rápido
-          p_cutoff_time      => NULL,          -- Sin límite de tiempo (Corre hasta vaciar la lista VIP)
-          p_verbose          => FALSE,         -- Mantiene el log del background limpio
-          p_threshold_pct    => 0.00,          -- [IGNORADO] CUSTOM_LIST no evalúa porcentajes
-          p_min_dead_tup     => 0              -- [IGNORADO] CUSTOM_LIST no evalúa volumen
-      );
+    CALL maint.sp_orchestrate_vacuum(
+        p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+        p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+        p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+        p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+        p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+        p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+        p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+        p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+        p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+    );
     $$
 );
 
@@ -174,15 +178,17 @@ SET max_parallel_maintenance_workers = 4;
 SET vacuum_cost_delay = 0;
 
 -- 2. Lanza el orquestador (Los background workers heredarán tus 2GB y 4 hilos automáticamente)
-CALL maint.sp_orchestrate_vacuum(
-      p_scope            => 'CUSTOM_LIST',    -- Evalúa solo esquemas de usuario
-      p_profile          => 'AGGRESSIVE',      -- Limpieza de índices automática (Lee maint.vacuum_profiles)
-      p_parallel_workers => 2,                -- Limpia hasta 4 tablas en simultáneo
-      p_cutoff_time      => '05:30:00'::TIME,-- [KILL SWITCH] Aborta cola si dan las 5:30 AM
-      p_verbose          => FALSE,           -- Silencioso (Ideal para ejecución en background/cron)
-      p_threshold_pct    => 5.00,            -- Umbral: Exige > 5% de basura para encolar la tabla
-      p_min_dead_tup     => 5000             -- Filtro: Ignora tablas con menos de 5,000 tuplas muertas
-  ); 
+    CALL maint.sp_orchestrate_vacuum(
+        p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+        p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+        p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+        p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+        p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+        p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+        p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+        p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+        p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+    );
 
 -- 3. Al terminar la orquestación, el procedimiento resetea la configuración del ROL automáticamente en el catálogo.
 
