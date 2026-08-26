@@ -165,12 +165,18 @@ COMMENT ON COLUMN maint.vacuum_full_tasks.new_relfilenode IS 'Firma física del 
    PROCEDIMIENTO: maint.sp_pgstattuple (V3.4.3 - Full Radar Observability)
    REFACTOR: Elimina filtros de exclusión (is_ignored) para registrar telemetría completa.
 ========================================================================================= */
+/* =========================================================================================
+   PROCEDIMIENTO: maint.sp_pgstattuple (V3.4.4 - Full Radar Observability + Force Bypass)
+   REFACTOR: Inyección de p_force_bloat_mb para homologación total con el Orquestador.
+========================================================================================= */
+-- DROP PROCEDURE IF EXISTS maint.sp_pgstattuple(VARCHAR, NUMERIC, NUMERIC, VARCHAR, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_pgstattuple(
     p_scope VARCHAR DEFAULT 'ALL_USER',
     p_bloat_pct_threshold NUMERIC DEFAULT 25.00,
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
     p_threshold_operator VARCHAR DEFAULT 'OR',  
     p_min_table_mb NUMERIC DEFAULT 0.00,
+    p_force_bloat_mb NUMERIC DEFAULT NULL,      -- [NUEVO]: Bypass de emergencia en MB para el Radar
     p_enable_deep_scan BOOLEAN DEFAULT FALSE,
     p_verbose BOOLEAN DEFAULT FALSE
 )
@@ -183,6 +189,7 @@ DECLARE
     v_total_bloat_pct NUMERIC(5,2); 
     v_total_bloat_kb NUMERIC(14,2);
     v_threshold_kb NUMERIC(14,2) := (p_bloat_mb_threshold * 1024.0);
+    v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
     v_requiere_vf BOOLEAN := FALSE;
     v_op_upper VARCHAR := UPPER(p_threshold_operator);
 BEGIN
@@ -195,12 +202,12 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4 - LOGIC: % | THRESHOLD: % KB)', v_op_upper, v_threshold_kb;
+        RAISE INFO '[DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: % | THRESHOLD: % KB | FORCE: %)', 
+                   v_op_upper, v_threshold_kb, COALESCE(v_force_bloat_kb::TEXT || ' KB', 'DESACTIVADO');
         RAISE INFO '=========================================================';
     END IF;
 
-    -- ELIMINADO: COALESCE(mf.is_ignored, FALSE) = FALSE
-    -- Ahora el Radar evalúa TODAS las tablas del ámbito para dar visibilidad total al DBA
+    -- Evaluamos TODAS las tablas del ámbito para dar visibilidad total al DBA
     FOR r_table IN (
         SELECT c.oid AS table_oid, n.nspname AS schema_name, c.relname AS table_name
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -222,7 +229,10 @@ BEGIN
             v_total_bloat_pct := COALESCE(r_approx.approx_free_percent, 0.00) + COALESCE(r_approx.dead_tuple_percent, 0.00);
             v_total_bloat_kb  := ROUND(((COALESCE(r_approx.approx_free_space, 0) + COALESCE(r_approx.dead_tuple_len, 0)) / 1024.0), 2);
 
-            IF v_op_upper = 'AND' THEN
+            -- EVALUACIÓN MATEMÁTICA CON TRIPLE VÍA (BYPASS / AND / OR)
+            IF v_force_bloat_kb IS NOT NULL AND v_total_bloat_kb >= v_force_bloat_kb THEN
+                v_requiere_vf := TRUE; -- BYPASS DIRECTO POR TAMAÑO MASIVO
+            ELSIF v_op_upper = 'AND' THEN
                 v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
             ELSE
                 v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
@@ -234,7 +244,9 @@ BEGIN
                 v_total_bloat_pct := COALESCE(r_deep.free_percent, 0.00) + COALESCE(r_deep.dead_tuple_percent, 0.00);
                 v_total_bloat_kb  := ROUND(((COALESCE(r_deep.free_space, 0) + COALESCE(r_deep.dead_tuple_len, 0)) / 1024.0), 2);
                 
-                IF v_op_upper = 'AND' THEN
+                IF v_force_bloat_kb IS NOT NULL AND v_total_bloat_kb >= v_force_bloat_kb THEN
+                    v_requiere_vf := TRUE;
+                ELSIF v_op_upper = 'AND' THEN
                     v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
                 ELSE
                     v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
@@ -286,6 +298,7 @@ BEGIN
 END;
 $$;
 
+
 REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 
 -- =========================================================================================
@@ -295,6 +308,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
    PROCEDIMIENTO ORQUESTADOR: maint.sp_orchestrate_vacuum_full
    VERSIÓN: 3.4.7 (Grado Diamante - Strict Fail-Fast Guardrails & Persistent Audit)
 ========================================================================================= */
+-- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_vacuum_full(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, NUMERIC, VARCHAR, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN); 
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
     p_scope VARCHAR DEFAULT 'ALL_USER',         -- 'ALL_USER', 'ALL_SYSTEM', 'ALL_SYSTEM_USER', 'CUSTOM_LIST'
     p_profile VARCHAR DEFAULT 'SMART',          -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
@@ -459,6 +473,7 @@ BEGIN
         FROM maint.pgstattuple t
         LEFT JOIN maint.filters mf ON mf.schema_name = t.schema_name AND mf.table_name = t.table_name AND mf.maintenance_action IN ('ALL', 'VACUUM_FULL')
         WHERE t.evaluation_date = CURRENT_DATE
+          AND t.schema_name <> 'maint' -- [ESCUDO ACTIVO]: El orquestador JAMÁS encola sus propias tablas para cirugía mayor.
           AND COALESCE(mf.is_ignored, FALSE) = FALSE
           AND (
               (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
