@@ -137,39 +137,6 @@ CREATE TABLE IF NOT EXISTS maint.pgstattuple (
 
 COMMENT ON TABLE maint.pgstattuple IS 'Histórico diario de telemetría física en Kilobytes. Registra el bloat real independientemente de Autovacuum.';
 
--- =========================================================================================
--- 5. TABLAS HIJAS DE TAREAS (VACUUM, ANALYZE, VACUUM_FULL)
--- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.vacuum_tasks (
-    task_id SERIAL PRIMARY KEY,                                
-    job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE, 
-    schema_name TEXT NOT NULL,                                 
-    table_name TEXT NOT NULL,                                  
-    n_live_tup BIGINT,                                         
-    n_dead_tup BIGINT,                                         
-    dead_pct NUMERIC(5,2),                                     
-    status VARCHAR(30) DEFAULT 'PENDING',                      
-    child_pid INT,                                             
-    started_at TIMESTAMPTZ,                                    
-    ended_at TIMESTAMPTZ,                                      
-    error_log TEXT                                             
-);
-
-CREATE TABLE IF NOT EXISTS maint.analyze_tasks (
-    task_id SERIAL PRIMARY KEY,
-    job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE,
-    schema_name TEXT NOT NULL,
-    table_name TEXT NOT NULL,
-    total_filas BIGINT,                     
-    filas_afectadas BIGINT,                 
-    drift_pct NUMERIC(5,2),                 
-    status VARCHAR(30) DEFAULT 'PENDING', 
-    child_pid INT,
-    stage_number INT DEFAULT 1,
-    started_at TIMESTAMPTZ,
-    ended_at TIMESTAMPTZ,
-    error_log TEXT
-);
 
 CREATE TABLE IF NOT EXISTS maint.vacuum_full_tasks (
     task_id BIGSERIAL PRIMARY KEY,
