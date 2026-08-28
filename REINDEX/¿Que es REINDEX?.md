@@ -35,7 +35,7 @@ SELECT
     schemaname,
     tablename,
     indexname,
-    pg_size_pretty(pgstat.index_size) AS tamano_indice,
+    pg_size_pretty(pgstat.index_size) AS size_indice,
     COALESCE(pgstat.leaf_fragmentation, 0) AS leaf_frag_pct,
     ROUND(COALESCE(pgstat.avg_leaf_density, 0)::numeric, 2) AS avg_density_pct,
     CASE 
