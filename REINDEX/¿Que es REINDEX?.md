@@ -29,6 +29,65 @@ Aquí radica la diferencia entre la caída de un servicio corporativo y un mante
 * **`REINDEX` (Estándar) - BLOQUEO LETAL:** Adquiere un bloqueo exclusivo sobre el índice y un bloqueo compartido sobre la tabla. **Detiene todas las escrituras**. Nadie podrá hacer un `INSERT`, `UPDATE` o `DELETE` en la tabla mientras dure la reconstrucción. En una tabla transaccional masiva, esto es inaceptable.
 * **`REINDEX CONCURRENTLY` - EL ESTÁNDAR VANGUARD:** Es la evolución táctica. Construye el índice nuevo en segundo plano mientras los usuarios siguen leyendo y escribiendo en la tabla a máxima velocidad. Requiere más CPU, más disco temporal y hace dos escaneos de la tabla, pero garantiza **Cero Downtime (Cero tiempo de inactividad)**.
 
+## Obtener las estadisticas de fragmentacion de los indices.
+```
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    pg_size_pretty(pgstat.index_size) AS tamano_indice,
+    COALESCE(pgstat.leaf_fragmentation, 0) AS porcentaje_fragmentacion,
+    ROUND(COALESCE(pgstat.avg_leaf_density, 0)::numeric, 2) AS porcentaje_densidad,
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((100 - pgstat.avg_leaf_density)::numeric, 2)
+    END AS porcentaje_bloat,
+    -- Columna expresada en Kilobytes (kB)
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / 1024.0), 2)
+    END AS desperdicio_kb,
+    -- Columna expresada en Megabytes (MB)
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / (1024.0 * 1024.0)), 2)
+    END AS desperdicio_mb
+FROM (
+    SELECT 
+        i.schemaname,
+        i.tablename,
+        i.indexname,
+        quote_ident(i.schemaname) || '.' || quote_ident(i.indexname) AS full_index_name
+    FROM pg_indexes i
+    WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema')
+      AND pg_relation_size((quote_ident(i.schemaname) || '.' || quote_ident(i.indexname))::regclass) > 0
+) sub
+CROSS JOIN LATERAL pgstatindex(sub.full_index_name) AS pgstat
+WHERE schemaname = 'lab'
+ORDER BY 
+    schemaname, 
+    tablename,
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100)
+    END DESC;
+
+
+```
+**Ejem. Salida**
+```
+ schemaname |     tablename     |       indexname        | tamano_indice | porcentaje_fragmentacion | porcentaje_densidad | porcentaje_bloat | desperdicio_kb | desperdicio_mb 
+------------+-------------------+------------------------+---------------+--------------------------+---------------------+------------------+----------------+----------------
+ lab        | demo_index_bloat  | idx_bloat_heavy        | 16 MB         |                    50.25 |               66.40 |            33.60 |        5410.94 |           5.28
+ lab        | demo_index_escudo | idx_escudo_historial   | 4152 kB       |                    10.51 |               52.04 |            47.96 |        1991.30 |           1.94
+ lab        | demo_index_escudo | demo_index_escudo_pkey | 1328 kB       |                        0 |               90.05 |             9.95 |         132.14 |           0.13
+ lab        | demo_index_vip    | idx_vip_facturas       | 2112 kB       |                    49.62 |               65.94 |            34.06 |         719.35 |           0.70
+ lab        | demo_index_vip    | demo_index_vip_pkey    | 1112 kB       |                        0 |               89.83 |            10.17 |         113.09 |           0.11
+ lab        | demo_index_zombi  | demo_index_zombi_pkey  | 456 kB        |                        0 |               89.50 |            10.50 |          47.88 |           0.05
+ lab        | demo_index_zombi  | idx_zombi_fail         | 176 kB        |                        0 |               97.34 |             2.66 |           4.68 |           0.00
+(7 rows)
+```
+
 ### 4. Ventajas, Desventajas y Riesgos
 
 El mantenimiento de índices es vital, pero la reconstrucción concurrente tiene sus propios peligros.
