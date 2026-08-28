@@ -35,23 +35,23 @@ SELECT
     schemaname,
     tablename,
     indexname,
-    pg_size_pretty(pgstat.index_size) AS size_indice,
-    COALESCE(pgstat.leaf_fragmentation, 0) AS leaf_frag_pct,
+    pgstat.index_size/1024 AS size_kb,
     ROUND(COALESCE(pgstat.avg_leaf_density, 0)::numeric, 2) AS avg_density_pct,
+    COALESCE(pgstat.leaf_fragmentation, 0) AS leaf_frag_pct,
     CASE 
         WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
         ELSE ROUND((100 - pgstat.avg_leaf_density)::numeric, 2)
-    END AS pct_bloat,
+    END AS free_pct,
     -- Columna expresada en Kilobytes (kB)
     CASE 
         WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
         ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / 1024.0), 2)
-    END AS free_space_kb,
+    END AS free_space_kb/*,
     -- Columna expresada en Megabytes (MB)
     CASE 
         WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
         ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / (1024.0 * 1024.0)), 2)
-    END AS free_space_mb
+    END AS free_space_mb*/
 FROM (
     SELECT 
         i.schemaname,
@@ -71,20 +71,18 @@ ORDER BY
         WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
         ELSE ((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100)
     END DESC;
-
-
 ```
 **Ejem. Salida**
 ```
- schemaname |     tablename     |       indexname        | tamano_indice | leaf_frag_pct | avg_density_pct | pct_bloat | free_space_kb | free_space_mb 
-------------+-------------------+------------------------+---------------+---------------+-----------------+-----------+---------------+---------------
- lab        | demo_index_bloat  | idx_bloat_heavy        | 16 MB         |         50.25 |           66.40 |     33.60 |       5410.94 |          5.28
- lab        | demo_index_escudo | idx_escudo_historial   | 4152 kB       |         10.51 |           52.04 |     47.96 |       1991.30 |          1.94
- lab        | demo_index_escudo | demo_index_escudo_pkey | 1328 kB       |             0 |           90.05 |      9.95 |        132.14 |          0.13
- lab        | demo_index_vip    | idx_vip_facturas       | 2112 kB       |         49.62 |           65.94 |     34.06 |        719.35 |          0.70
- lab        | demo_index_vip    | demo_index_vip_pkey    | 1112 kB       |             0 |           89.83 |     10.17 |        113.09 |          0.11
- lab        | demo_index_zombi  | demo_index_zombi_pkey  | 456 kB        |             0 |           89.50 |     10.50 |         47.88 |          0.05
- lab        | demo_index_zombi  | idx_zombi_fail         | 176 kB        |             0 |           97.34 |      2.66 |          4.68 |          0.00
+ schemaname |     tablename     |       indexname        | size_kb | avg_density_pct | leaf_frag_pct | free_pct | free_space_kb 
+------------+-------------------+------------------------+---------+-----------------+---------------+----------+---------------
+ lab        | demo_index_bloat  | idx_bloat_heavy        |   16104 |           66.40 |         50.25 |    33.60 |       5410.94
+ lab        | demo_index_escudo | idx_escudo_historial   |    4152 |           52.04 |         10.51 |    47.96 |       1991.30
+ lab        | demo_index_escudo | demo_index_escudo_pkey |    1328 |           90.05 |             0 |     9.95 |        132.14
+ lab        | demo_index_vip    | idx_vip_facturas       |    2112 |           65.94 |         49.62 |    34.06 |        719.35
+ lab        | demo_index_vip    | demo_index_vip_pkey    |    1112 |           89.83 |             0 |    10.17 |        113.09
+ lab        | demo_index_zombi  | demo_index_zombi_pkey  |     456 |           89.50 |             0 |    10.50 |         47.88
+ lab        | demo_index_zombi  | idx_zombi_fail         |     176 |           97.34 |             0 |     2.66 |          4.68
 (7 rows)
 ```
 
