@@ -113,7 +113,7 @@ Basado en la doctrina del DBA SQUAD, así es como debes orquestar esta herramien
 * **Recomendación:** **JAMÁS LO EJECUTES.**
 * **Justificación:** Es redundancia técnica. Como ya vimos en su manual, `VACUUM FULL` reconstruye implícitamente **todos** los índices de la tabla desde cero. Si lanzas un `REINDEX` después, estarás obligando al motor a reconstruir un árbol que acaba de ser creado a la perfección hace cinco minutos.
 
-#### Escenario C: Fragmentación Crítica comprobada (> 40% de Bloat) y Densidad < 50% 
+#### Escenario C: Fragmentación Crítica comprobada (> 40% de Bloat) y Densidad < 50 promedio
 leaf_fragmentation >= 40% AND avg_leaf_density < 50
 * **Cuándo ejecutarlo:** **En ventanas de bajo tráfico, SIEMPRE de forma concurrente.**
 * **Justificación:** Si tu tabla de auditoría sufre purgas masivas mensuales, su índice se llenará de huecos que el Autovacuum no podrá encoger. Usa `REINDEX INDEX CONCURRENTLY nombre_indice;` para reconstruirlo en caliente y recuperar el rendimiento sin tirar las operaciones del negocio.
