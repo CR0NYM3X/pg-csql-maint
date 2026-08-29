@@ -225,7 +225,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
     p_scope VARCHAR DEFAULT 'ALL_USER',
     p_profile VARCHAR DEFAULT 'CONCURRENT',     
-    p_parallel_workers INT DEFAULT 2,           
+    p_parallel_workers INT DEFAULT 2,           -- Rango estricto permitido: 1 a 4
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_frag_pct_threshold NUMERIC DEFAULT 40.00,
@@ -251,28 +251,42 @@ DECLARE
     v_bloat_kb_threshold NUMERIC(14,2) := (p_bloat_mb_threshold * 1024.0);
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
     v_force_bypass BOOLEAN := FALSE;
-    v_param RECORD; v_changed_params TEXT[] := '{}';
+    
+    -- Variables para el Interceptor de Sesión
+    v_param RECORD;
+    v_changed_params TEXT[] := '{}';
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
-    -- 0. Intercepción de Recursos
+    -- =====================================================================
+    -- 0. PRE-FLIGHT CHECK: INTERCEPCIÓN DINÁMICA DE RAM Y RECURSOS
+    -- =====================================================================
     FOR v_param IN (
-        SELECT name, setting FROM pg_settings 
-        WHERE name IN ('max_parallel_maintenance_workers', 'maintenance_work_mem') AND setting IS DISTINCT FROM reset_val
+        SELECT name, setting 
+        FROM pg_settings 
+        WHERE name IN ('max_parallel_maintenance_workers', 'maintenance_work_mem')
+          AND setting IS DISTINCT FROM reset_val
     ) LOOP
         EXECUTE format('ALTER ROLE %I SET %I = %L', current_user, v_param.name, v_param.setting);
         v_changed_params := array_append(v_changed_params, v_param.name);
     END LOOP;
-    IF array_length(v_changed_params, 1) > 0 THEN COMMIT; END IF;
 
-    -- Validaciones
+    IF array_length(v_changed_params, 1) > 0 THEN
+        COMMIT; -- Forzamos commit para que los workers (pg_background) lean la RAM asignada
+    END IF;
+
+    -- Validaciones Fail-Fast de Infraestructura
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN RAISE EXCEPTION 'CRÍTICO: Extensión "pg_background" ausente.'; END IF;
     IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN RAISE EXCEPTION 'CRÍTICO [RECURSOS]: max_worker_processes insuficiente.'; END IF;
     IF p_parallel_workers < 1 OR p_parallel_workers > 4 THEN RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Para REINDEX, p_parallel_workers debe estar entre 1 y 4.'; END IF;
     IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRÍTICO: Perfil inválido.'; END IF;
+    IF UPPER(p_scope) NOT IN ('ALL_USER', 'ALL_SYSTEM', 'ALL_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRÍTICO: Ámbito inválido.'; END IF;
+    IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN RAISE EXCEPTION 'ALERTA ROJA: FORCE_SURGERY requiere CUSTOM_LIST.'; END IF;
 
-    -- 1. Self Healing
+    -- =====================================================================
+    -- 1. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL
+    -- =====================================================================
     FOR v_orphaned_job IN (
         SELECT j.job_id FROM maint.jobs j WHERE j.status = 'RUNNING' AND j.maintenance_action = 'REINDEX'
           AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.pid = j.orchestrator_pid AND a.pid != pg_backend_pid() AND a.state != 'idle')
@@ -282,10 +296,13 @@ BEGIN
         UPDATE maint.reindex_tasks SET status = 'ABORTED_ORPHAN', ended_at = clock_timestamp(), error_log = 'Orchestrator process died.' WHERE job_id = v_orphaned_job.job_id AND status IN ('PENDING', 'RUNNING');
         UPDATE maint.jobs SET status = 'ABORTED_ORPHAN', ended_at = clock_timestamp(), tables_processed = (SELECT COUNT(*) FROM maint.reindex_tasks WHERE job_id = v_orphaned_job.job_id AND status = 'SUCCESS') WHERE job_id = v_orphaned_job.job_id;
         v_healed_count := v_healed_count + 1;
+        IF p_verbose THEN RAISE NOTICE '[SELF-HEALING] Job % detectado como huérfano. Abortado.', v_orphaned_job.job_id; END IF;
     END LOOP;
     COMMIT;
 
-    -- 2. Triage Síncrono
+    -- =====================================================================
+    -- 2. TRIAGE SÍNCRONO DEL RADAR
+    -- =====================================================================
     IF v_profile_upper = 'CONCURRENT' THEN
         IF p_verbose THEN RAISE INFO '[RADAR] Ejecutando sp_pgstatindex síncronamente...'; END IF;
         CALL maint.sp_pgstatindex(p_scope, p_frag_pct_threshold, p_bloat_pct_threshold, p_bloat_mb_threshold, p_threshold_operator, p_min_index_mb, p_force_frag_pct, p_force_bloat_mb, p_verbose);
@@ -302,9 +319,13 @@ BEGIN
 
     INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
     VALUES (p_scope || '_' || v_profile_upper, 'REINDEX', pg_backend_pid(), v_execution_params, 'RUNNING') RETURNING job_id INTO v_job_id;
-    COMMIT; -- FORZAMOS COMMIT PARA LIBERAR SNAPSHOT INICIAL
+    
+    -- LIBERACIÓN CRÍTICA 1: Cierra el snapshot de la creación del Job
+    COMMIT; 
 
-    -- 3. Poblar Cola
+    -- =====================================================================
+    -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint)
+    -- =====================================================================
     FOR r_idx IN (
         SELECT t.schema_name, t.table_name, t.index_name, t.total_bloat_kb, t.total_bloat_pct, t.leaf_fragmentation_pct, t.is_invalid
         FROM maint.pgstatindex t
@@ -324,15 +345,20 @@ BEGIN
             END IF;
         END IF;
     END LOOP;
-    COMMIT;
+    
+    -- LIBERACIÓN CRÍTICA 2: Cierra el snapshot del encolado
+    COMMIT; 
 
+    -- SALIDA TEMPRANA
     IF v_total_tasks = 0 THEN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
         IF array_length(v_changed_params, 1) > 0 THEN FOR i IN 1 .. array_length(v_changed_params, 1) LOOP EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]); END LOOP; END IF;
         COMMIT; IF p_verbose THEN RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Procesados: 0 / 0', v_job_id; END IF; RETURN;
     END IF;
 
-    -- 5. Bucle de Despacho
+    -- =====================================================================
+    -- 5. BUCLE DE DESPACHO ASÍNCRONO Y CHECKSUM (Libre de Snapshots)
+    -- =====================================================================
     LOOP
         FOR r_finished IN SELECT task_id, child_pid, schema_name, index_name, old_relfilenode FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'RUNNING' AND child_pid NOT IN (SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_background')
         LOOP
@@ -342,6 +368,7 @@ BEGIN
                 
                 IF v_new_node = r_finished.old_relfilenode THEN
                     UPDATE maint.reindex_tasks SET status = 'FAILED_SILENT_ANOMALY', ended_at = clock_timestamp(), new_relfilenode = v_new_node, error_log = 'Engine returned success, but relfilenode did not change.' WHERE task_id = r_finished.task_id;
+                    IF p_verbose THEN RAISE WARNING '    [ANOMALÍA] %.% terminó, pero relfilenode (%) NO CAMBIÓ.', r_finished.schema_name, r_finished.index_name, v_new_node; END IF;
                 ELSE
                     UPDATE maint.reindex_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), new_relfilenode = v_new_node WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1; 
@@ -349,6 +376,7 @@ BEGIN
                 END IF;
             EXCEPTION WHEN OTHERS THEN
                 UPDATE maint.reindex_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM WHERE task_id = r_finished.task_id;
+                IF p_verbose THEN RAISE WARNING '    [ERROR] FALLO CRITICO EN %.%: %', r_finished.schema_name, r_finished.index_name, SQLERRM; END IF;
             END;
             COMMIT; 
         END LOOP;
@@ -372,21 +400,22 @@ BEGIN
                 SELECT c.relfilenode INTO v_old_node FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = v_schema AND c.relname = v_index;
                 UPDATE maint.reindex_tasks SET status = 'RUNNING', started_at = clock_timestamp(), old_relfilenode = v_old_node WHERE task_id = v_task_id; 
                 
-                -- LIBERACIÓN CLAVE DE TRANSMISIÓN DE RECURSOS (LIBERA SNAPSHOT)
+                -- LIBERACIÓN CRÍTICA 3: Cierra la transacción antes del lanzamiento
                 COMMIT; 
 
                 v_raw_sql := format('REINDEX INDEX CONCURRENTLY %I.%I;', v_schema, v_index);
                 v_child_pid := public.pg_background_launch(v_raw_sql);
                 UPDATE maint.reindex_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; 
                 
-                COMMIT; -- CONFIRMA APERTURA DEL TRABAJADOR Y LIBERA SNAPSHOT
+                -- LIBERACIÓN CRÍTICA 4: Cierra la transacción inmediatamente para que los trabajadores no esperen al Padre
+                COMMIT; 
 
                 IF p_verbose THEN RAISE INFO '    [>] LANZANDO [REINDEX] PID % -> %.% (OLD NODE: %) | Frag: %%% | Bloat: %%% / % KB', v_child_pid, v_schema, v_index, v_old_node, v_frag_pct_eval, v_bloat_pct_eval, v_bloat_kb_eval; END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
             END IF;
         END LOOP;
 
-        -- DESACOPLAMIENTO DE ESPERA PARA PERMITIR AVANCE DE WORKERS
+        -- LIBERACIÓN CRÍTICA 5: Mantiene la sesión del orquestador libre de snapshots viejos en la espera
         COMMIT;
         PERFORM pg_sleep(2);
     END LOOP;
