@@ -8,25 +8,24 @@
                                VANGUARD BLACK-OPS
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
-   VERSIÓN: 3.4 (Grado Diamante - Dynamic Parameter Interception & Checksum)
+   VERSIÓN: 3.4.1 (Grado Diamante - Dynamic Parameter Interception, Checksum & Triple Threshold)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS maint;
 
-
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.jobs (
     job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    job_type VARCHAR(50) NOT NULL,              -- Ej. 'ALL_USER_BALANCED', 'CUSTOM_LIST_FORCE_SURGERY'
+    job_type VARCHAR(50) NOT NULL,              -- Ej. 'ALL_USER_CONCURRENT', 'CUSTOM_LIST_FORCE_SURGERY'
     maintenance_action VARCHAR(20) NOT NULL,    -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
     orchestrator_pid INT NOT NULL,              -- PID del proceso principal (Padre) para Self-Healing
     execution_params JSONB NOT NULL,             -- Fotografía inmutable de los parámetros
     status VARCHAR(30) NOT NULL DEFAULT 'RUNNING',-- 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_CUTOFF', 'ABORTED_ORPHAN'
-    tables_processed INT DEFAULT 0,             -- Cantidad real de tablas intervenidas exitosamente
+    tables_processed INT DEFAULT 0,             -- Cantidad real de índices intervenidos exitosamente
     started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     ended_at TIMESTAMPTZ                        -- Sello de tiempo final
 );
@@ -47,7 +46,7 @@ CREATE TABLE IF NOT EXISTS maint.filters (
     filter_id SERIAL PRIMARY KEY,                              
     schema_name VARCHAR(255) NOT NULL,                         
     table_name VARCHAR(255) NOT NULL,
-    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL',                         
+    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL',                           
     is_ignored BOOLEAN NOT NULL DEFAULT FALSE,                 
     force_maintenance BOOLEAN NOT NULL DEFAULT FALSE,          
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), 
@@ -62,11 +61,10 @@ CREATE TABLE IF NOT EXISTS maint.filters (
 
 COMMENT ON CONSTRAINT chk_valid_maintenance_action ON maint.filters IS 'Candado de integridad: Previene errores tipográficos al registrar filtros.';
 
-
 -- =========================================================================================
--- 1. TABLA DE TELEMETRÍA PREDICTIVA (Radar de Índices B-Tree)
+-- 3. TABLA DE TELEMETRÍA PREDICTIVA (Radar de Índices B-Tree V3.4.1)
 -- =========================================================================================
--- DROP TABLE IF EXISTS maint.pgstatindex CASCADE;
+DROP TABLE IF EXISTS maint.pgstatindex CASCADE;
 CREATE TABLE IF NOT EXISTS maint.pgstatindex (
     triage_id BIGSERIAL PRIMARY KEY,
     evaluation_date DATE NOT NULL DEFAULT current_date,
@@ -80,6 +78,7 @@ CREATE TABLE IF NOT EXISTS maint.pgstatindex (
     empty_pages_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00,
     
     total_bloat_kb NUMERIC(14,2) NOT NULL DEFAULT 0.00,
+    total_bloat_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00, -- [NUEVO] Porcentaje de espacio libre recuperable
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     requiere_reindex BOOLEAN NOT NULL DEFAULT FALSE,
     
@@ -89,11 +88,12 @@ CREATE TABLE IF NOT EXISTS maint.pgstatindex (
 COMMENT ON TABLE maint.pgstatindex IS 'Radar periódico de fragmentación B-Tree y estimación de bloat físico en índices.';
 COMMENT ON COLUMN maint.pgstatindex.is_invalid IS 'Bandera roja (Zombi): Índices que fallaron al construirse y necesitan reconstrucción obligatoria.';
 COMMENT ON COLUMN maint.pgstatindex.total_bloat_kb IS 'Cálculo estimado del espacio desperdiciado en disco derivado de la densidad foliar.';
+COMMENT ON COLUMN maint.pgstatindex.total_bloat_pct IS 'Porcentaje de espacio desperdiciado (100 - avg_leaf_density_pct).';
 
 -- =========================================================================================
--- 2. TABLA DE COLA TRANSACCIONAL (Módulo Reindex)
+-- 4. TABLA DE COLA TRANSACCIONAL (Módulo Reindex V3.4.1)
 -- =========================================================================================
--- DROP TABLE IF EXISTS maint.reindex_tasks CASCADE;
+DROP TABLE IF EXISTS maint.reindex_tasks CASCADE;
 CREATE TABLE IF NOT EXISTS maint.reindex_tasks (
     task_id BIGSERIAL PRIMARY KEY,
     job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE,
@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS maint.reindex_tasks (
     index_name VARCHAR(255) NOT NULL,
     
     frag_pct_evaluado NUMERIC(5,2) NOT NULL,
+    bloat_pct_evaluado NUMERIC(5,2) NOT NULL, -- [NUEVO] Auditoría forense del % de bloat al encolar
     bloat_kb_evaluado NUMERIC(14,2) NOT NULL,
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     
@@ -120,12 +121,12 @@ CREATE INDEX IF NOT EXISTS idx_reindex_tasks_job_status_id
 ON maint.reindex_tasks (job_id, status, task_id);
 
 -- =========================================================================================
--- 3. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex)
+-- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V3.4.1)
 -- =========================================================================================
--- DROP PROCEDURE IF EXISTS maint.sp_pgstatindex(VARCHAR, NUMERIC, NUMERIC, VARCHAR, NUMERIC, NUMERIC, NUMERIC, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_pgstatindex(
     p_scope VARCHAR DEFAULT 'ALL_USER',
-    p_frag_pct_threshold NUMERIC DEFAULT 20.00,
+    p_frag_pct_threshold NUMERIC DEFAULT 40.00,
+    p_bloat_pct_threshold NUMERIC DEFAULT 20.00, -- [NUEVO] Umbral de % de Bloat (Espacio Libre)
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
     p_threshold_operator VARCHAR DEFAULT 'OR',  
     p_min_index_mb NUMERIC DEFAULT 10.00,
@@ -144,7 +145,7 @@ DECLARE
     v_op_upper VARCHAR := UPPER(p_threshold_operator);
     
     v_leaf_frag NUMERIC(5,2); v_avg_density NUMERIC(5,2); v_empty_pages NUMERIC(5,2);
-    v_size_kb NUMERIC(14,2); v_est_bloat_kb NUMERIC(14,2);
+    v_size_kb NUMERIC(14,2); v_est_bloat_kb NUMERIC(14,2); v_total_bloat_pct NUMERIC(5,2);
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
@@ -153,7 +154,8 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES (LOGIC: % | FRAG: %%% | MB: % | FORCE_MB: %)', v_op_upper, p_frag_pct_threshold, p_bloat_mb_threshold, COALESCE(p_force_bloat_mb::TEXT, 'OFF');
+        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES V3.4.1 (LOGIC: % | FRAG: %%% | BLOAT: %%% / % MB | FORCE_MB: %)', 
+                   v_op_upper, p_frag_pct_threshold, p_bloat_pct_threshold, p_bloat_mb_threshold, COALESCE(p_force_bloat_mb::TEXT, 'OFF');
         RAISE INFO '=========================================================';
     END IF;
 
@@ -174,7 +176,7 @@ BEGIN
 
             -- Evaluador Zombi
             IF r_idx.is_invalid THEN
-                v_leaf_frag := 100.00; v_avg_density := 0.00; v_empty_pages := 100.00; v_est_bloat_kb := v_size_kb;
+                v_leaf_frag := 100.00; v_avg_density := 0.00; v_empty_pages := 100.00; v_est_bloat_kb := v_size_kb; v_total_bloat_pct := 100.00;
                 v_requiere_reindex := TRUE; 
             ELSE
                 -- Evaluador Físico B-Tree (pgstatindex)
@@ -182,24 +184,26 @@ BEGIN
                 v_leaf_frag   := CASE WHEN r_stat.leaf_fragmentation = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.leaf_fragmentation, 0.00) END;
                 v_avg_density := CASE WHEN r_stat.avg_leaf_density = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.avg_leaf_density, 0.00) END;
                 v_empty_pages := CASE WHEN r_stat.empty_pages = 'NaN'::numeric THEN 0.00 ELSE COALESCE(r_stat.empty_pages, 0.00) END;
-                v_est_bloat_kb := ROUND((v_size_kb * (1.0 - (v_avg_density / 100.0)))::numeric, 2);
+                
+                v_total_bloat_pct := ROUND((100.00 - v_avg_density)::numeric, 2);
+                v_est_bloat_kb := ROUND((v_size_kb * (v_total_bloat_pct / 100.0))::numeric, 2);
 
                 -- EVALUACIÓN MATEMÁTICA CON TRIPLE VÍA (BYPASS / AND / OR)
                 IF (p_force_frag_pct IS NOT NULL AND v_leaf_frag >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND v_est_bloat_kb >= v_force_bloat_kb) THEN
                     v_requiere_reindex := TRUE;
                 ELSIF v_op_upper = 'AND' THEN
-                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold AND v_est_bloat_kb >= v_threshold_kb);
+                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold OR (v_total_bloat_pct >= p_bloat_pct_threshold AND v_est_bloat_kb >= v_threshold_kb));
                 ELSE
-                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold OR v_est_bloat_kb >= v_threshold_kb);
+                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold OR v_total_bloat_pct >= p_bloat_pct_threshold OR v_est_bloat_kb >= v_threshold_kb);
                 END IF;
             END IF;
 
             INSERT INTO maint.pgstatindex (
-                evaluation_date, schema_name, table_name, index_name, index_size_kb, leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, total_bloat_kb, is_invalid, requiere_reindex
+                evaluation_date, schema_name, table_name, index_name, index_size_kb, leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, total_bloat_kb, total_bloat_pct, is_invalid, requiere_reindex
             ) VALUES (
-                v_today, r_idx.schema_name, r_idx.table_name, r_idx.index_name, v_size_kb, v_leaf_frag, v_avg_density, v_empty_pages, v_est_bloat_kb, r_idx.is_invalid, v_requiere_reindex
+                v_today, r_idx.schema_name, r_idx.table_name, r_idx.index_name, v_size_kb, v_leaf_frag, v_avg_density, v_empty_pages, v_est_bloat_kb, v_total_bloat_pct, r_idx.is_invalid, v_requiere_reindex
             ) ON CONFLICT (evaluation_date, schema_name, index_name) DO UPDATE SET
-                index_size_kb = EXCLUDED.index_size_kb, leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, avg_leaf_density_pct = EXCLUDED.avg_leaf_density_pct, empty_pages_pct = EXCLUDED.empty_pages_pct, total_bloat_kb = EXCLUDED.total_bloat_kb, is_invalid = EXCLUDED.is_invalid, requiere_reindex = EXCLUDED.requiere_reindex;
+                index_size_kb = EXCLUDED.index_size_kb, leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, avg_leaf_density_pct = EXCLUDED.avg_leaf_density_pct, empty_pages_pct = EXCLUDED.empty_pages_pct, total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, is_invalid = EXCLUDED.is_invalid, requiere_reindex = EXCLUDED.requiere_reindex;
             
             IF v_requiere_reindex THEN v_sniped := v_sniped + 1; END IF;
 
@@ -216,16 +220,16 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 
 -- =========================================================================================
--- 4. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex
+-- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V3.4.1
 -- =========================================================================================
--- DROP PROCEDURE IF EXISTS maint.sp_orchestrate_reindex(VARCHAR, VARCHAR, INT, TIME, BOOLEAN, NUMERIC, NUMERIC, VARCHAR, NUMERIC, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN);
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
     p_scope VARCHAR DEFAULT 'ALL_USER',
     p_profile VARCHAR DEFAULT 'CONCURRENT',     
     p_parallel_workers INT DEFAULT 2,           -- Rango estricto permitido: 1 a 4
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
-    p_frag_pct_threshold NUMERIC DEFAULT 20.00,
+    p_frag_pct_threshold NUMERIC DEFAULT 40.00,
+    p_bloat_pct_threshold NUMERIC DEFAULT 20.00, -- [NUEVO] Umbral de % de Bloat
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
     p_threshold_operator VARCHAR DEFAULT 'OR',
     p_min_index_mb NUMERIC DEFAULT 10.00,
@@ -237,9 +241,9 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_job_id BIGINT; v_task_id BIGINT; v_schema TEXT; v_table TEXT; v_index TEXT; v_child_pid INT;
-    v_bloat_kb_eval NUMERIC(14,2); v_frag_pct_eval NUMERIC(5,2); v_raw_sql TEXT;
+    v_bloat_kb_eval NUMERIC(14,2); v_frag_pct_eval NUMERIC(5,2); v_bloat_pct_eval NUMERIC(5,2); v_raw_sql TEXT;
     r_idx RECORD; r_finished RECORD;
-    v_active_workers INT := 0; v_pending_tasks INT; v_total_tasks INT := 0; v_success_count INT := 0;
+    v_active_workers INT := 0; v_pending_tasks INT := 0; v_total_tasks INT := 0; v_success_count INT := 0;
     v_healed_count INT := 0;
     v_profile_upper VARCHAR := UPPER(p_profile); v_op_upper VARCHAR := UPPER(p_threshold_operator);
     v_start_time TIMESTAMPTZ := clock_timestamp(); v_execution_params JSONB; v_orphaned_job RECORD;
@@ -301,17 +305,17 @@ BEGIN
     -- =====================================================================
     IF v_profile_upper = 'CONCURRENT' THEN
         IF p_verbose THEN RAISE INFO '[RADAR] Ejecutando sp_pgstatindex síncronamente...'; END IF;
-        CALL maint.sp_pgstatindex(p_scope, p_frag_pct_threshold, p_bloat_mb_threshold, p_threshold_operator, p_min_index_mb, p_force_frag_pct, p_force_bloat_mb, p_verbose);
+        CALL maint.sp_pgstatindex(p_scope, p_frag_pct_threshold, p_bloat_pct_threshold, p_bloat_mb_threshold, p_threshold_operator, p_min_index_mb, p_force_frag_pct, p_force_bloat_mb, p_verbose);
     END IF;
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V3.4)';
+        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V3.4.1)';
         RAISE INFO 'ALCANCE: % | HILOS: % | CUTOFF: % | REBUILD ZOMBIS: %', p_scope, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_rebuild_invalid;
         RAISE INFO '=========================================================';
     END IF;
 
-    v_execution_params := jsonb_build_object('scope', p_scope, 'profile', v_profile_upper, 'parallel_workers', p_parallel_workers, 'frag_pct_threshold', p_frag_pct_threshold, 'bloat_mb_threshold', p_bloat_mb_threshold, 'threshold_operator', v_op_upper, 'force_frag_pct', p_force_frag_pct, 'force_bloat_mb', p_force_bloat_mb, 'rebuild_invalid', p_rebuild_invalid, 'keep_history', p_keep_history);
+    v_execution_params := jsonb_build_object('scope', p_scope, 'profile', v_profile_upper, 'parallel_workers', p_parallel_workers, 'frag_pct_threshold', p_frag_pct_threshold, 'bloat_pct_threshold', p_bloat_pct_threshold, 'bloat_mb_threshold', p_bloat_mb_threshold, 'threshold_operator', v_op_upper, 'force_frag_pct', p_force_frag_pct, 'force_bloat_mb', p_force_bloat_mb, 'rebuild_invalid', p_rebuild_invalid, 'keep_history', p_keep_history);
 
     INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
     VALUES (p_scope || '_' || v_profile_upper, 'REINDEX', pg_backend_pid(), v_execution_params, 'RUNNING') RETURNING job_id INTO v_job_id;
@@ -321,20 +325,20 @@ BEGIN
     -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint)
     -- =====================================================================
     FOR r_idx IN (
-        SELECT t.schema_name, t.table_name, t.index_name, t.total_bloat_kb, t.leaf_fragmentation_pct, t.is_invalid
+        SELECT t.schema_name, t.table_name, t.index_name, t.total_bloat_kb, t.total_bloat_pct, t.leaf_fragmentation_pct, t.is_invalid
         FROM maint.pgstatindex t
         LEFT JOIN maint.filters mf ON mf.schema_name = t.schema_name AND mf.table_name = t.table_name AND mf.maintenance_action IN ('ALL', 'REINDEX')
         WHERE t.evaluation_date = CURRENT_DATE AND t.schema_name <> 'maint' AND COALESCE(mf.is_ignored, FALSE) = FALSE
           AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'ALL_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'ALL_SYSTEM_USER') OR (p_scope = 'ALL_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema')))
     ) LOOP
         IF v_profile_upper = 'FORCE_SURGERY' THEN
-            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
             v_total_tasks := v_total_tasks + 1;
         ELSE
             v_force_bypass := ((p_force_frag_pct IS NOT NULL AND r_idx.leaf_fragmentation_pct >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND r_idx.total_bloat_kb >= v_force_bloat_kb));
 
-            IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR ((v_op_upper = 'AND' AND r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold) OR (v_op_upper = 'OR' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))) THEN
-                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+            IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR ((v_op_upper = 'AND' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR (r_idx.total_bloat_pct >= p_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold)))) OR ((v_op_upper = 'OR' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_pct >= p_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))) THEN
+                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
             END IF;
         END IF;
@@ -388,8 +392,8 @@ BEGIN
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
-            SELECT task_id, schema_name, table_name, index_name, bloat_kb_evaluado, frag_pct_evaluado, is_invalid 
-            INTO v_task_id, v_schema, v_table, v_index, v_bloat_kb_eval, v_frag_pct_eval, r_idx.is_invalid 
+            SELECT task_id, schema_name, table_name, index_name, bloat_kb_evaluado, bloat_pct_evaluado, frag_pct_evaluado, is_invalid 
+            INTO v_task_id, v_schema, v_table, v_index, v_bloat_kb_eval, v_bloat_pct_eval, v_frag_pct_eval, r_idx.is_invalid 
             FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
@@ -400,7 +404,7 @@ BEGIN
                 v_child_pid := public.pg_background_launch(v_raw_sql);
                 UPDATE maint.reindex_tasks SET child_pid = v_child_pid WHERE task_id = v_task_id; COMMIT;
 
-                IF p_verbose THEN RAISE INFO '    [>] LANZANDO [REINDEX] PID % -> %.% (OLD NODE: %) | Frag: %%% | Bloat: % KB', v_child_pid, v_schema, v_index, v_old_node, v_frag_pct_eval, v_bloat_kb_eval; END IF;
+                IF p_verbose THEN RAISE INFO '    [>] LANZANDO [REINDEX] PID % -> %.% (OLD NODE: %) | Frag: %%% | Bloat: %%% / % KB', v_child_pid, v_schema, v_index, v_old_node, v_frag_pct_eval, v_bloat_pct_eval, v_bloat_kb_eval; END IF;
                 v_active_workers := v_active_workers + 1; v_pending_tasks := v_pending_tasks - 1;
             END IF;
         END LOOP;
