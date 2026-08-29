@@ -241,3 +241,114 @@ CALL maint.sp_orchestrate_reindex(
 * **`FAILED_SILENT_ANOMALY`**: El motor SQL retornó éxito en la ejecución, pero el recolector forense detectó que el inodo del archivo en disco no cambió (`old_relfilenode = new_relfilenode`). La tarea se marca como anomalía física silenciosa.
 * **`SKIPPED_TIME_LIMIT`**: La tarea permanecía en estado `PENDING` cuando el orquestador activó el freno de emergencia por hora límite (`p_cutoff_time`).
 * **`ABORTED_ORPHAN`**: La tarea quedó congelada en estado `RUNNING` debido a la muerte del proceso Padre, y fue sellada por el procedimiento de *Self-Healing* en la siguiente ejecución.
+
+
+
+
+----
+
+
+
+# monitorear y verificar si un `REINDEX` (o `REINDEX CONCURRENTLY`) se está ejecutando en tiempo real
+
+---
+
+### 1. Vista de Progreso Nativa de PostgreSQL (`pg_stat_progress_create_index`)
+
+*Soportado desde PostgreSQL 12 en adelante.*
+
+Cuando ejecutas un `REINDEX CONCURRENTLY`, PostgreSQL abre una vista del sistema dedicada exclusivamente a rastrear el progreso de creación y reconstrucción de índices.
+
+```sql
+SELECT 
+    p.pid AS worker_pid,
+    a.datname AS database_name,
+    p.relid::regclass AS table_name,
+    p.indexrelid::regclass AS index_name,
+    p.phase AS fase_actual,
+    p.blocks_total,
+    p.blocks_done,
+    CASE 
+        WHEN p.blocks_total > 0 
+        THEN ROUND((p.blocks_done::numeric / p.blocks_total::numeric) * 100, 2)
+        ELSE 0.00
+    END AS pct_progreso_fase,
+    p.tuples_total,
+    p.tuples_done,
+    p.partitions_total,
+    p.partitions_done
+FROM pg_stat_progress_create_index p
+JOIN pg_stat_activity a ON p.pid = a.pid;
+
+```
+
+#### 💡 Fases Típicas que verás en la columna `fase_actual`:
+
+1. `building index: scanning table` (Leyendo la tabla original).
+2. `building index: sorting tuples` (Ordenando claves en RAM/Disk).
+3. `building index: loading tree` (Construyendo el nuevo árbol B-Tree).
+4. `waiting for readers before snapshot` / `waiting for writers before snapshot` (Sincronización de concurrencia sin bloqueos).
+
+---
+
+### 2. Monitoreo de Sesiones Activas (`pg_stat_activity`)
+
+Esta consulta te permite identificar la instrucción exacta, el PID del proceso padre, el trabajador en segundo plano (`pg_background`) y cuánto tiempo lleva corriendo la consulta.
+
+```sql
+SELECT 
+    a.pid,
+    a.usename AS usuario,
+    a.client_addr AS cliente_ip,
+    a.backend_type,
+    a.state AS estado,
+    ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - a.query_start))::numeric, 2) AS duracion_segundos,
+    a.wait_event_type AS tipo_espera,
+    a.wait_event AS evento_espera,
+    a.query AS consulta_activa
+FROM pg_stat_activity a
+WHERE a.query ILIKE '%REINDEX%'
+  AND a.pid != pg_backend_pid()
+ORDER BY a.query_start ASC;
+
+```
+
+---
+
+### 3. Consulta de Auditoría a las Tablas de la Suite (`maint.reindex_tasks`)
+
+Si lanzaste el trabajo mediante el orquestador Vanguard `maint.sp_orchestrate_reindex`, puedes revisar directamente el estado en nuestras tablas maestras de control:
+
+```sql
+SELECT 
+    t.task_id,
+    t.job_id,
+    t.schema_name,
+    t.table_name,
+    t.index_name,
+    t.status AS estado_tarea,
+    t.child_pid AS worker_pid,
+    t.started_at AS hora_inicio,
+    ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - t.started_at))::numeric, 2) AS tiempo_transcurrido_seg
+FROM maint.reindex_tasks t
+WHERE t.status = 'RUNNING'
+ORDER BY t.started_at ASC;
+
+```
+
+---
+
+### 4. Monitoreo a nivel de Sistema Operativo Linux (Vista de Samuel)
+
+Si tienes acceso a la terminal SSH del servidor de base de datos, puedes ver cómo el proceso de PostgreSQL está consumiendo CPU o I/O para construir el índice:
+
+```bash
+# Ver los procesos activos de PostgreSQL ejecutando REINDEX
+ps aux | grep -i "REINDEX"
+
+# O monitorear las lecturas/escrituras en disco en tiempo real
+iostat -xz 1
+
+```
+
+ 
