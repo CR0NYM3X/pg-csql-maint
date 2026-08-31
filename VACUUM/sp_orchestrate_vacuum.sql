@@ -7,7 +7,7 @@
    ╚═════╝ ╚═════╝ ╚═╝  ╚═╝    ╚══════╝ ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═════╝ 
                                VANGUARD BLACK-OPS
                                
-   MÓDULO: Orquestador Asíncrono de Mantenimiento de Bases de Datos (Vacuum/Analyze)
+   MÓDULO: Orquestador Asíncrono de Mantenimiento de Bases de Datos (Vacuum)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
    VERSIÓN: 3.1.4 (Grado Diamante - Smart Triage & Polymorphic Dynamic Execution)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
