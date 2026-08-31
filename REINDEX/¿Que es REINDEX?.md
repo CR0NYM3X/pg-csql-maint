@@ -120,6 +120,12 @@ leaf_fragmentation >= 40% AND avg_leaf_density < 50
 
 * **Cuándo ejecutarlo:** **Intervención de Emergencia.**
 * **Justificación:** Si los logs del servidor de Linux arrojan errores de I/O de hardware, o las consultas fallan con errores de *"index row requires XX bytes, maximum size is YY"*, el índice está físicamente corrupto. Un `REINDEX` estándar inmediato forzará al motor a leer la tabla limpia y reconstruir el mapa de navegación sano.
+---
+
+* **El punto de partida real (Fillfactor):** Un índice B-Tree en PostgreSQL casi nunca tiene un 100% de densidad. Por diseño, el motor utiliza un parámetro llamado `fillfactor` (configurado en 90 por defecto para índices), lo que significa que intencionalmente deja un 10% de espacio vacío en las páginas para acomodar nuevas inserciones de manera eficiente. Por lo tanto, un índice completamente sano ya arranca con un ~10% de "bloat".
+* **El estándar proactivo (30% - 40% de Bloat):** Cuando el bloat alcanza el 30% o 40% (densidad cayendo a 70% o 60%), el impacto en el rendimiento ya es medible. PostgreSQL está utilizando un 30-40% más de memoria RAM (shared buffers) de la necesaria solo para cachear "aire" en lugar de datos útiles, y las lecturas en disco toman más tiempo. Los administradores marcan este nivel como crítico para lanzar un `REINDEX CONCURRENTLY` preventivo, evitando que las consultas se vuelvan lentas para el usuario final.
+* **El escenario catastrófico (Densidad < 50):** Si esperas a que la densidad del índice caiga por debajo de 50, significa que **más de la mitad del índice es espacio muerto o basura** (bloat > 50%). Bajo este estándar, no estás previniendo un problema de rendimiento, sino reaccionando a una degradación severa que probablemente ya está impactando los tiempos de respuesta del sistema.
+
 
 ---
 
