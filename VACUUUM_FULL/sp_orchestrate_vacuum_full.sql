@@ -68,32 +68,7 @@ CREATE TABLE IF NOT EXISTS maint.filters (
 
 COMMENT ON CONSTRAINT chk_valid_maintenance_action ON maint.filters IS 'Candado de integridad: Previene errores tipográficos al registrar filtros.';
 
--- =========================================================================================
--- 3. PERFILES DE VACUUM ORDINARIO
--- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.vacuum_profiles (
-    profile_name VARCHAR(50) PRIMARY KEY,
-    description TEXT,
-    is_analyze BOOLEAN DEFAULT FALSE,
-    is_freeze BOOLEAN DEFAULT FALSE,
-    skip_locked BOOLEAN DEFAULT TRUE,
-    is_verbose BOOLEAN DEFAULT FALSE,
-    index_cleanup VARCHAR(10) DEFAULT 'AUTO',
-    truncate_pages BOOLEAN DEFAULT TRUE,
-    parallel_workers INT DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
-    updated_by VARCHAR(100) DEFAULT current_user,
-    
-    CONSTRAINT chk_index_cleanup CHECK (index_cleanup IN ('AUTO', 'ON', 'OFF')),
-    CONSTRAINT chk_parallel_limit CHECK (parallel_workers BETWEEN 0 AND 32)
-);
-
-INSERT INTO maint.vacuum_profiles (profile_name, description, skip_locked, index_cleanup, is_analyze, parallel_workers) 
-VALUES 
-('LIGHT', 'Perfil inofensivo. Salta bloqueos y no limpia índices.', TRUE, 'OFF', FALSE, 0),
-('BALANCED', 'Perfil estándar. Limpia índices automáticamente.', FALSE, 'AUTO', FALSE, 0),
-('AGGRESSIVE', 'Perfil profundo. Fuerza hilos paralelos y actualiza estadísticas.', FALSE, 'AUTO', TRUE, 4)
-ON CONFLICT (profile_name) DO NOTHING;
+ 
 
 -- =========================================================================================
 -- 4. TABLA DE TELEMETRÍA FÍSICA: maint.pgstattuple (Granularidad en Kilobytes)
