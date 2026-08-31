@@ -8,6 +8,7 @@
                                VANGUARD BLACK-OPS
                                
    MÓDULO: Orquestador Asíncrono de Mantenimiento de Bases de Datos (Vacuum/Analyze)
+   Compatibilidad : <= pg_background 1.4 
    VERSIÓN: 3.0 (Grado Diamante - Smart Triage & Dummy Orchestrator)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
