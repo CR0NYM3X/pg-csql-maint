@@ -8,6 +8,7 @@
                                VANGUARD BLACK-OPS
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
+   Compatibilidad : <= pg_background 1.4 
    VERSIÓN: 3.4.1 (Grado Diamante - Dynamic Parameter Interception, Checksum & Triple Threshold)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
