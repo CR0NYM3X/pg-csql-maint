@@ -9,7 +9,7 @@
                                
    MÓDULO: Orquestador Asíncrono de Mantenimiento de Estadísticas (ANALYZE)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.1.1 (Grado Diamante - Smart Triage & Multi-Stage Preload)
+   VERSIÓN: 3.1.2 (Grado Diamante - Direct INTO Extraction & Polymorphic Immunity)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -118,7 +118,7 @@ ON maint.analyze_tasks (job_id, stage_number, status, task_id);
 COMMENT ON TABLE maint.analyze_tasks IS 'Cola transaccional y bitácora forense para la orquestación asíncrona de estadísticas (ANALYZE).';
 
 /* =========================================================================================
-   PROCEDIMIENTO: maint.sp_orchestrate_analyze (V3.1.1)
+   PROCEDIMIENTO: maint.sp_orchestrate_analyze (V3.1.2 - Extracción Directa INTO)
 ========================================================================================= */
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_scope VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM'
@@ -146,8 +146,7 @@ DECLARE
     v_execution_params JSONB;
     v_orphaned_job RECORD;
     
-    -- [INYECCIÓN POLIMÓRFICA]: Inmunidad a pg_background_handle
-    v_launch_record RECORD;
+    -- [INYECCIÓN POLIMÓRFICA]: Control dinámico de versión
     v_is_v2 BOOLEAN := FALSE;
     v_ext_version TEXT;
 BEGIN
@@ -236,7 +235,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD (V3.1.1 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD (V3.1.2 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
         RAISE INFO 'ALCANCE: % | PERFIL: % | HILOS: % | FASES: % | CUTOFF: % | HISTORIAL: %', 
                    p_scope, UPPER(p_profile), p_parallel_workers, v_max_stages, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_keep_history;
         RAISE INFO '=========================================================';
@@ -324,9 +323,9 @@ BEGIN
                 BEGIN
                     -- Consumo de Resultado (Realiza Auto-Detach Nativo en Flujo de Éxito)
                     IF v_is_v2 THEN
-                        EXECUTE 'PERFORM * FROM public.pg_background_result($1, $2)' USING r_finished.child_pid, r_finished.child_cookie;
+                        EXECUTE 'SELECT 1 FROM public.pg_background_result($1, $2) AS (result text)' USING r_finished.child_pid, r_finished.child_cookie;
                     ELSE
-                        EXECUTE 'PERFORM * FROM public.pg_background_result($1)' USING r_finished.child_pid;
+                        EXECUTE 'SELECT 1 FROM public.pg_background_result($1) AS (result text)' USING r_finished.child_pid;
                     END IF;
 
                     UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp() WHERE task_id = r_finished.task_id;
@@ -385,13 +384,16 @@ BEGIN
 
                     v_raw_sql := v_raw_sql || format('ANALYZE %I.%I;', v_schema, v_table);
 
-                    -- [LANZAMIENTO DINÁMICO POLIMÓRFICO]: Late Binding mediante RECORD
+                    -- [LANZAMIENTO DINÁMICO POLIMÓRFICO]: Extracción limpia directamente en la cláusula INTO
                     IF v_is_v2 THEN
-                        EXECUTE 'SELECT * FROM public.pg_background_launch($1)' INTO v_launch_record USING v_raw_sql;
-                        v_child_pid := (v_launch_record).pid;
-                        v_child_cookie := (v_launch_record).cookie;
+                        EXECUTE 'SELECT pid, cookie FROM public.pg_background_launch($1)' 
+                        INTO v_child_pid, v_child_cookie 
+                        USING v_raw_sql;
                     ELSE
-                        EXECUTE 'SELECT public.pg_background_launch($1)' INTO v_child_pid USING v_raw_sql;
+                        EXECUTE 'SELECT public.pg_background_launch($1)' 
+                        INTO v_child_pid 
+                        USING v_raw_sql;
+                        
                         v_child_cookie := NULL;
                     END IF;
 
