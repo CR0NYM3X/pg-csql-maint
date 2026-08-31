@@ -8,11 +8,9 @@
 ```
 # 🛡️ pg-csql-maint 
 
-**pg-csql-maint** es la suite definitiva de orquestación asíncrona, predictiva y forense para el mantenimiento de bases de datos PostgreSQL de alta transaccionalidad.
+**pg-csql-maint** es la suite definitiva de orquestación asíncrona, predictiva  para el mantenimiento de bases de datos PostgreSQL de alta transaccionalidad.
 
-Diseñada bajo estrictos estándares de ingeniería de confiabilidad (SRE), esta suite erradica la contención de bloqueos, el *bloat* silencioso y la degradación de índices mediante operaciones multi-hilo en segundo plano. No confía en ejecuciones a ciegas: cada módulo evalúa la salud física del motor, interviene quirúrgicamente y verifica los *checksums* de los inodos en disco para garantizar una auditoría inmutable.
-
-*(Vista general del ecosistema modular en el repositorio base, referenciado en image_3889ad.png).*
+Esta suite erradica la contención de bloqueos, el *bloat* silencioso y la degradación de índices mediante operaciones multi-hilo en segundo plano. No confía en ejecuciones a ciegas: cada módulo valúa la salud física del motor, interviene quirúrgicamente y verifica los *checksums* de los inodos en disco para garantizar una auditoría inmutable.
 
 ---
 
@@ -142,4 +140,55 @@ CALL maint.sp_orchestrate_vacuum_full(
 2. **Validación Forense de Inodos (`relfilenode`):** Las operaciones de reconstrucción física (REINDEX y VACUUM FULL) no confían en el "OK" lógico del motor. Verifican el inodo del sistema de archivos antes y después de la operación. Si el archivo en disco no cambió, la operación se marca como anomalía silenciosa.
 3. **RAM Interception:** Inyecta tuning dinámico a los *background workers* (ej. `maintenance_work_mem`) copiando la configuración de la sesión orquestadora de forma segura, reseteando los privilegios al terminar.
 4. **Desacoplamiento de Snapshots:** Cero riesgo de bloqueos mutuos (*Deadlocks*). La orquestación libera continuamente los *snapshots* de transacción (`COMMIT;`) para permitir que la Fase 2 de índices concurrentes avance en milisegundos.
+
+
+
+---
+# Umbrales mas usados.
+
+
+### Umbrales para ANALYZE (Actualización de Estadísticas)
+
+El planificador de consultas de PostgreSQL depende de `ANALYZE` para saber cómo ejecutar una búsqueda. Los valores normales se basan en el parámetro por defecto de la comunidad `autovacuum_analyze_scale_factor` (0.1).
+
+| Estado | Umbral (% Tuplas Modificadas) | Cuándo aplicarlo y Síntomas |
+| --- | --- | --- |
+| **Normal** | **0% - 10%** | Gestionado automáticamente por *autovacuum*. No requiere intervención manual. |
+| **Atención** | **10% - 20%** | Ocurre tras cargas masivas (ej. `COPY` o `INSERT` masivo). El *autovacuum* puede tardar en reaccionar. Conviene lanzar `ANALYZE` manual a la tabla afectada. |
+| **Crítico** | **> 20%** o **Planes lentos** | Consultas que antes volaban de repente hacen *Seq Scan* en lugar de usar índices. Estadísticas desfasadas o tablas recién creadas/vaciadas sin analizar. |
+
+---
+
+### Umbrales para VACUUM Normal (Limpieza de Tuplas Muertas)
+
+`VACUUM` libera el espacio de registros actualizados/eliminados (tuplas muertas) para que sea reutilizado. Los umbrales estándar nacen del parámetro `autovacuum_vacuum_scale_factor` (0.2).
+
+| Estado | Umbral (% Tuplas Muertas) | Cuándo aplicarlo y Síntomas |
+| --- | --- | --- |
+| **Normal** | **0% - 20%** | Espacio reutilizable estándar. El *autovacuum* lo limpia en segundo plano sin afectar el rendimiento. |
+| **Atención** | **20% - 40%** | El *autovacuum* no está dando abasto. Suele indicar que necesitas afinar `autovacuum_vacuum_cost_limit` para darle más agresividad al proceso automático. |
+| **Crítico** | **> 40%** o **XID Age Alto** | Acumulación grave de basura. Si el indicador de *Transaction ID Age* se acerca a los 2 billones, la base de datos se detendrá por riesgo de *Wraparound*. Requiere `VACUUM` manual o ajuste urgente de *autovacuum*. |
+
+---
+
+### Umbrales para VACUUM FULL (Reconstrucción Total de Tabla)
+
+**Nota crucial:** `VACUUM FULL` bloquea la tabla por completo (lecturas y escrituras). En entornos de producción modernos, casi nunca se usa; en su lugar se emplean herramientas comunitarias como `pg_repack` o `pg_squeeze` que hacen lo mismo pero "en caliente".
+
+| Estado | Umbral (% Bloat en Tabla) | Cuándo aplicarlo y Síntomas |
+| --- | --- | --- |
+| **Normal** | **10% - 20%** | Es el espacio libre natural (Fillfactor) necesario para que el mecanismo MVCC actualice registros sin fragmentar. |
+| **Atención** | **30% - 50%** | Las lecturas secuenciales comienzan a degradarse porque el motor lee bloques de disco vacíos. Se planifican mantenimientos nocturnos con `pg_repack`. |
+| **Crítico** | **> 50%** | Más de la mitad de tu disco es "aire". Las consultas consumen memoria RAM y CPU excesiva solo para saltar datos vacíos. Justifica una ventana de mantenimiento. |
+
+---
+
+### Umbrales para REINDEX (Compactación de Índices)
+La fragmentación de índices degrada las búsquedas. Siempre debe usarse la variante `REINDEX INDEX CONCURRENTLY` para no bloquear producción.
+
+| Estado | % Bloat en Índice | % Fragmentación Hoja | Cuándo aplicarlo y Síntomas |
+| --- | --- | --- | --- |
+| **Normal** | **< 10% - 15%** | **< 10%** | Comportamiento óptimo. La densidad del índice ronda el 90%. |
+| **Atención** | **20% - 30%** | **10% - 30%** | El índice ha crecido en tamaño desproporcionadamente frente a la tabla. Buen momento para programar un `REINDEX CONCURRENTLY` en horas valle. |
+| **Crítico** | **> 30% - 40%** | **> 50%** | Consultas por rango (ej. `BETWEEN`, `>`) muy lentas porque el motor tiene que saltar caóticamente por el disco. Costo de RAM elevado para cachear el índice. |
  
