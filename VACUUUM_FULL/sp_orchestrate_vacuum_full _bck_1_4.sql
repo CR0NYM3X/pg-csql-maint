@@ -8,6 +8,7 @@
                                VANGUARD BLACK-OPS
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (VACUUM, ANALYZE & VACUUM FULL)
+   Compatibilidad : <= pg_background 1.4 
    VERSIÓN: 3.4 (Grado Diamante - relfilenode Checksum & Single-Cron KB Triage)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
