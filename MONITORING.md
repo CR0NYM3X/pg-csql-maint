@@ -261,3 +261,85 @@ LIMIT 25;
 ```
 
 * **Para qué sirve:** Identifica los índices B-Tree más fragmentados, con mayor porcentaje de bloat o marcados como corruptos/inválidos (`is_invalid = TRUE`), ideales para la intervención con `sp_orchestrate_reindex`.
+
+
+
+
+
+### 📍 5.3. Diagnóstico Físico Aproximado de Tablas en Tiempo Real (`pgstattuple_approx`)
+
+```sql
+SELECT 
+    n.nspname AS schema_name,
+    c.relname AS table_name,
+    ROUND((pg_relation_size(c.oid) / 1024.0 / 1024.0)::numeric, 2) AS total_mb,
+    ROUND((app.table_len / 1024.0 / 1024.0)::numeric, 2) AS scan_mb,
+    ROUND(app.scanned_percent::numeric, 2) AS scanned_pct,
+    app.approx_tuple_count AS live_tuples,
+    ROUND((app.approx_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS live_mb,
+    ROUND(app.approx_tuple_percent::numeric, 2) AS live_pct,
+    app.dead_tuple_count AS dead_tuples,
+    ROUND((app.dead_tuple_len / 1024.0 / 1024.0)::numeric, 2) AS dead_mb,
+    ROUND(app.dead_tuple_percent::numeric, 2) AS dead_pct,
+    ROUND((app.approx_free_space / 1024.0 / 1024.0)::numeric, 2) AS free_mb,
+    ROUND(app.approx_free_percent::numeric, 2) AS free_pct,
+    ROUND((app.dead_tuple_percent + app.approx_free_percent)::numeric, 2) AS total_bloat_pct
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL pgstattuple_approx(c.oid) app
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+  AND c.relkind IN ('r', 'm')
+ORDER BY total_bloat_pct DESC;
+
+```
+
+* **Para qué sirve:** Realiza un escaneo ultrarrápido y no bloqueante sobre las páginas del mapa de visibilidad (*Visibility Map*) para evaluar la salud física de todas las tablas de usuario del servidor en MB y porcentajes (tuplas muertas + espacio libre disperso), ordenadas de mayor a menor porcentaje de degradación.
+
+---
+
+### 📍 5.4. Diagnóstico Físico en Vivo de Índices B-Tree (`pgstatindex`)
+
+```sql
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    pg_size_pretty(pgstat.index_size) AS size_indice,
+    COALESCE(pgstat.leaf_fragmentation, 0) AS leaf_frag_pct,
+    ROUND(COALESCE(pgstat.avg_leaf_density, 0)::numeric, 2) AS avg_density_pct,
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((100 - pgstat.avg_leaf_density)::numeric, 2)
+    END AS pct_bloat,
+    -- Columna expresada en Kilobytes (kB)
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / 1024.0), 2)
+    END AS free_space_kb,
+    -- Columna expresada en Megabytes (MB)
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ROUND((((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100) / (1024.0 * 1024.0)), 2)
+    END AS free_space_mb
+FROM (
+    SELECT 
+        i.schemaname,
+        i.tablename,
+        i.indexname,
+        quote_ident(i.schemaname) || '.' || quote_ident(i.indexname) AS full_index_name
+    FROM pg_indexes i
+    WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema')
+      AND pg_relation_size((quote_ident(i.schemaname) || '.' || quote_ident(i.indexname))::regclass) > 0
+) sub
+CROSS JOIN LATERAL pgstatindex(sub.full_index_name) AS pgstat
+ORDER BY 
+    CASE 
+        WHEN pgstat.avg_leaf_density IS NULL OR pgstat.avg_leaf_density = 'NaN'::float8 THEN 0
+        ELSE ((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100)
+    END DESC;
+
+```
+
+* **Para qué sirve:** Ejecuta la función nativa `pgstatindex` sobre todos los índices B-Tree de esquemas de usuario que tengan espacio físico superior a 0 bytes. Reporta la fragmentación foliar (`leaf_frag_pct`), densidad promedio de páginas (`avg_density_pct`) y calcula el espacio desperdiciado recuperable tanto en **KB** como en **MB**, ordenando los índices de mayor a menor volumen desperdiciado.
+
+
