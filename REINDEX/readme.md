@@ -77,9 +77,9 @@ Controla el universo de esquemas e índices que entran al radar de evaluación.
 
 | Valor | Descripción | ¿Evalúa Umbrales de Salud B-Tree? |
 | --- | --- | --- |
-| **`ALL_USER`** *(Default)* | Revisa todos los índices B-Tree en esquemas de usuario (excluye `pg_catalog`, `information_schema` y `maint`). | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
-| **`ALL_SYSTEM_USER`** | Evalúa índices de tablas de usuario y catálogos internos del sistema simultáneamente. | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
-| **`ALL_SYSTEM`** | Restringe la evaluación únicamente a los catálogos del motor (`pg_catalog`, `information_schema`). | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
+| **`SMART_USER`** *(Default)* | Revisa todos los índices B-Tree en esquemas de usuario (excluye `pg_catalog`, `information_schema` y `maint`). | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
+| **`SMART_SYSTEM_USER`** | Evalúa índices de tablas de usuario y catálogos internos del sistema simultáneamente. | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
+| **`SMART_SYSTEM`** | Restringe la evaluación únicamente a los catálogos del motor (`pg_catalog`, `information_schema`). | ✅ **SÍ** (Evalúa Fragmentación, % Bloat y MB Bloat) |
 | **`CUSTOM_LIST`** | Procesa **únicamente** las tablas marcadas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** (Si se combina con `p_profile = 'FORCE_SURGERY'`) |
 
 ### ⚙️ Perfiles de Mantenimiento (`p_profile`)
@@ -108,7 +108,7 @@ La arquitectura es asíncrona y no bloqueante. Utiliza uno de los dos métodos r
 SELECT cron.schedule_in_database('vanguard_daily_reindex', '0 2 * * *', 
 $$ 
   CALL maint.sp_orchestrate_reindex(
-      p_scope               => 'ALL_USER',    -- Alcance ('ALL_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM', 'CUSTOM_LIST')
+      p_scope               => 'SMART_USER',    -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')
       p_profile             => 'CONCURRENT',  -- Perfil ('CONCURRENT', 'FORCE_SURGERY')
       p_parallel_workers    => 2,             -- Hilos asíncronos paralelos (Rango permitido: 1 a 4)
       p_cutoff_time         => '06:00:00'::TIME, -- Hora límite / Kill-Switch (06:00 AM)
@@ -139,7 +139,7 @@ $$,
 SELECT * FROM public.pg_background_launch(
     $$
     CALL maint.sp_orchestrate_reindex(
-        p_scope               => 'ALL_USER',
+        p_scope               => 'SMART_USER',
         p_profile             => 'CONCURRENT',
         p_parallel_workers    => 2,
         p_cutoff_time         => NULL,
@@ -182,7 +182,7 @@ SET max_parallel_maintenance_workers = 4;
 
 -- 2. Lanza el orquestador (Los workers heredan los 2GB de RAM por hilo automáticamente)
 CALL maint.sp_orchestrate_reindex(
-    p_scope            => 'ALL_USER',
+    p_scope            => 'SMART_USER',
     p_profile          => 'CONCURRENT',
     p_parallel_workers => 2,
     p_verbose          => TRUE
@@ -206,7 +206,7 @@ CALL maint.sp_orchestrate_reindex(
 
 | Parámetro | Tipo | Default | Descripción y Uso Operativo |
 | --- | --- | --- | --- |
-| `p_scope` | `VARCHAR` | `'ALL_USER'` | **Ámbito de Cobertura.** Define el universo de índices a evaluar. Valores: `'ALL_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`, `'CUSTOM_LIST'`. |
+| `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Define el universo de índices a evaluar. Valores: `'SMART_USER'`, `'SMART_SYSTEM_USER'`, `'SMART_SYSTEM'`, `'CUSTOM_LIST'`. |
 | `p_profile` | `VARCHAR` | `'CONCURRENT'` | **Perfil Operativo.** Define la modalidad de mantenimiento. Valores: `'CONCURRENT'` (Evaluación inteligente y ejecuciones no bloqueantes) y `'FORCE_SURGERY'` (Mantenimiento quirúrgico sobre la lista blanca de `maint.filters`). |
 | `p_parallel_workers` | `INT` | `2` | **Nivel de Concurrencia de Hilos.** Define cuántos índices se reconstruirán de manera simultánea en segundo plano. **Rango permitido de seguridad: 1 a 4 hilos.** |
 | `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Fija una hora límite (Ej. `'06:00:00'::TIME`). Si la hora actual del servidor alcanza este límite, la orquestación aborta la cola pendiente marcándola como `SKIPPED_TIME_LIMIT` para no invadir el horario productivo. |
