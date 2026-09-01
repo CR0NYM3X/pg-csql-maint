@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS maint.vacuum_tasks (
     table_name TEXT NOT NULL,                                   
     n_live_tup BIGINT,                                          
     n_dead_tup BIGINT,                                          
-    dead_pct NUMERIC(5,2),                                      
+    dead_pct NUMERIC(12,2),                                      
     status VARCHAR(30) DEFAULT 'PENDING',                       
     child_pid INT,                                              
     child_cookie BIGINT,                                          -- [HOMOLOGACIÓN UNIVERSAL]: Token de seguridad v2.0
@@ -320,7 +320,7 @@ BEGIN
     -- 3. POBLAR COLA DE TAREAS (TRIAGE CON BYPASS VIP Y FILTRO DE FUERZA BRUTA)
     INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
-           ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2)
+           LEAST(ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2), 999999999.99)
     FROM pg_stat_all_tables st
     LEFT JOIN LATERAL (
         SELECT is_ignored, force_maintenance 
