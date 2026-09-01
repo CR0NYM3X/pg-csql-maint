@@ -27,7 +27,7 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.jobs (
     job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    job_type VARCHAR(50) NOT NULL,              -- Ej. 'ALL_USER_BALANCED', 'CUSTOM_LIST_FORCE_SURGERY'
+    job_type VARCHAR(50) NOT NULL,              -- Ej. 'SMART_USER_BALANCED', 'CUSTOM_LIST_FORCE_SURGERY'
     maintenance_action VARCHAR(20) NOT NULL,    -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
     orchestrator_pid INT NOT NULL,              -- PID del proceso principal (Padre) para Self-Healing
     execution_params JSONB NOT NULL,             -- Fotografía inmutable de los parámetros
@@ -149,7 +149,7 @@ COMMENT ON COLUMN maint.vacuum_full_tasks.new_relfilenode IS 'Firma física del 
 -- 6. PROCEDIMIENTO: RADAR DE TRIAGE (maint.sp_pgstattuple)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_pgstattuple(
-    p_scope VARCHAR DEFAULT 'ALL_USER',
+    p_scope VARCHAR DEFAULT 'SMART_USER',
     p_bloat_pct_threshold NUMERIC DEFAULT 25.00,
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
     p_threshold_operator VARCHAR DEFAULT 'OR',  
@@ -195,9 +195,9 @@ BEGIN
           AND pg_relation_size(c.oid) >= (p_min_table_mb * 1024 * 1024)
           AND (
               (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
-              (p_scope = 'ALL_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR
-              (p_scope = 'ALL_SYSTEM_USER') OR
-              (p_scope = 'ALL_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema'))
+              (p_scope = 'SMART_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR
+              (p_scope = 'SMART_SYSTEM_USER') OR
+              (p_scope = 'SMART_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema'))
           )
     ) LOOP
         BEGIN
@@ -282,7 +282,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 -- 7. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_vacuum_full (V3.4.9 Polimórfico Universal)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
-    p_scope VARCHAR DEFAULT 'ALL_USER',         -- 'ALL_USER', 'ALL_SYSTEM', 'ALL_SYSTEM_USER', 'CUSTOM_LIST'
+    p_scope VARCHAR DEFAULT 'SMART_USER',         -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
     p_profile VARCHAR DEFAULT 'SMART',          -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
     p_parallel_workers INT DEFAULT 1,           -- Rango estricto permitido: 1 a 2
     p_cutoff_time TIME DEFAULT NULL,
@@ -346,8 +346,8 @@ BEGIN
         RAISE EXCEPTION 'CRÍTICO: El perfil solo admite ''SMART'' o ''FORCE_SURGERY''.';
     END IF;
 
-    IF UPPER(p_scope) NOT IN ('ALL_USER', 'ALL_SYSTEM', 'ALL_SYSTEM_USER', 'CUSTOM_LIST') THEN
-        RAISE EXCEPTION 'CRÍTICO: El ámbito (p_scope) "%" no es válido. Use ALL_USER, ALL_SYSTEM, ALL_SYSTEM_USER o CUSTOM_LIST.', p_scope;
+    IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN
+        RAISE EXCEPTION 'CRÍTICO: El ámbito (p_scope) "%" no es válido. Use SMART_USER, SMART_SYSTEM, SMART_SYSTEM_USER o CUSTOM_LIST.', p_scope;
     END IF;
 
     IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN
@@ -445,9 +445,9 @@ BEGIN
           AND COALESCE(mf.is_ignored, FALSE) = FALSE
           AND (
               (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
-              (p_scope = 'ALL_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR
-              (p_scope = 'ALL_SYSTEM_USER') OR
-              (p_scope = 'ALL_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema'))
+              (p_scope = 'SMART_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR
+              (p_scope = 'SMART_SYSTEM_USER') OR
+              (p_scope = 'SMART_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema'))
           )
     ) LOOP
         IF v_profile_upper = 'FORCE_SURGERY' THEN
