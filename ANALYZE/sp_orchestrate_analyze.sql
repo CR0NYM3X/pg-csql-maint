@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS maint.analyze_tasks (
     table_name TEXT NOT NULL,
     total_filas BIGINT,                      
     filas_afectadas BIGINT,                  
-    drift_pct NUMERIC(30,2),                  
+    drift_pct NUMERIC(12,2),                  
     status VARCHAR(30) DEFAULT 'PENDING', 
     child_pid INT,
     child_cookie BIGINT,                          -- [HOMOLOGACIÓN UNIVERSAL]: Token de seguridad v2.0
