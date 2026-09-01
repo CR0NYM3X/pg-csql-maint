@@ -1,4 +1,3 @@
-
 # 🛡️ pg-csql-vacuum-full
 
 **pg-csql-vacuum-full** es una suite de orquestación asíncrona, quirúrgica y con verificación forense diseñada para la reescritura física de tablas con degradación severa (*bloat*) en PostgreSQL. Su objetivo principal es recuperar espacio real en disco mediante cirugía mayor, manteniendo control estricto sobre el impacto de I/O y asegurando una trazabilidad completa mediante validación de checksum físico (`relfilenode`).
@@ -7,7 +6,7 @@
 > A diferencia del mantenimiento ordinario (`VACUUM` / `ANALYZE`), el procedimiento `VACUUM FULL` ejecuta una reescritura física completa de la tabla en disco y solicita un bloqueo exclusivo pesado (**`AccessExclusiveLock`**).
 > * **Bloqueo Total:** Durante la cirugía de una tabla, se **bloquean temporalmente todas las lecturas y escrituras (`SELECT`, `INSERT`, `UPDATE`, `DELETE`)** sobre esa tabla específica.
 > * **Requisito de Espacio:** La reescritura crea una copia temporal del archivo en disco; por ende, debes contar con espacio libre suficiente en el sistema de archivos equivalente al tamaño de la tabla a intervenir.
-> * **Control de I/O:** Para evitar colapsar la controladora de almacenamiento, la concurrencia máxima del orquestador está limitada estrictamente entre **1 y 2 hilos paralelos**.
+> * **Control de I/O:** Para evitar colapsar la controladora de almacenamiento, la concurrencia máxima del orquestador está limitada strictly entre **1 y 2 hilos paralelos**.
 > 
 > 
 
@@ -38,6 +37,7 @@ El módulo opera bajo el esquema `maint` utilizando 4 estructuras maestras que g
 | (Telemetría Histórica)  |                     | (Blacklist/White) |
 +-------------------------+                     +-------------------+
 
+
 ```
 
 ### 1. `maint.jobs` (La Cabecera Maestra Unificada)
@@ -46,7 +46,7 @@ Registra la ejecución global de cada ciclo de trabajo. Almacena el ID del traba
 
 ### 2. `maint.vacuum_full_tasks` (La Cola Transaccional y Bitácora Forense)
 
-Almacena el detalle individual de cada tabla encolada para cirugía mayor. Registra las métricas evaluadas al momento de entrar a la cola (`bloat_pct_evaluado`, `bloat_kb_evaluado`), los días de degradación sostenida cumplidos (`sustained_days_met`), el PID del trabajador asíncrono (`child_pid`), el registro de errores (`error_log`) y los **inodos físicos de archivo** (`old_relfilenode` vs `new_relfilenode`).
+Almacena el detalle individual de cada tabla encolada para cirugía mayor. Registra las métricas evaluadas al momento de entrar a la cola (`bloat_pct_evaluado`, `bloat_kb_evaluado`), los días de degradación sustained cumplidos (`sustained_days_met`), el PID del trabajador asíncrono (`child_pid`), el registro de errores (`error_log`) y los **inodos físicos de archivo** (`old_relfilenode` vs `new_relfilenode`).
 
 ### 3. `maint.pgstattuple` (Histórico Diario de Telemetría Física)
 
@@ -66,6 +66,7 @@ ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET is_ignor
 INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance)
 VALUES ('public', 'facturas', 'VACUUM_FULL', TRUE)
 ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET force_maintenance = EXCLUDED.force_maintenance;
+
 
 ```
 
@@ -95,7 +96,7 @@ El orquestador `maint.sp_orchestrate_vacuum_full` evalúa el alcance, el perfil 
 
 ## 🚀 Guía de Ejecución Rápida (Deploy & Forget)
 
-Debido al uso de `AccessExclusiveLock`, las ejecuciones deben programarse en ventanas de mantenimiento nocturnas o de bajo tráfico productivo.
+Due to the use of `AccessExclusiveLock`, execution should be scheduled in night maintenance windows or during low traffic product hours.
 
 ### MÉTODO 1: Programación Nocturna Automatizada (Vía `pg_cron`) 🌙
 
@@ -104,22 +105,24 @@ Debido al uso de `AccessExclusiveLock`, las ejecuciones deben programarse en ven
 SELECT cron.schedule_in_database('vanguard_daily_vacuum_full', '0 1 * * *',
 $$
   CALL maint.sp_orchestrate_vacuum_full(
-      p_scope               => 'SMART_USER',       -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')
-      p_profile             => 'SMART',          -- Modo ('SMART' o 'FORCE_SURGERY')
-      p_parallel_workers    => 1,                -- Hilos paralelos (Tope de seguridad: 1 a 2)
-      p_cutoff_time         => '05:00:00'::TIME, -- Hora límite / Kill-Switch (05:00 AM)
-      p_verbose             => FALSE,            -- Salida de diagnóstico en consola
-      p_bloat_pct_threshold => 25.00,            -- Umbral de % de bloat (>= 25%)
-      p_bloat_mb_threshold  => 1024.00,          -- Umbral de bloat en MB (>= 1 GB)
-      p_threshold_operator  => 'OR',             -- Compuerta lógica ('OR' / 'AND')
-      p_sustained_days      => 5,                -- Días consecutivos requeridos en el radar, para desactivarlo coloca 1
-      p_min_table_mb        => 50.00,            -- Tamaño mínimo de tabla a evaluar (>= 50 MB)
-      p_force_bloat_mb      => NULL,             -- Bypass por tamaño masivo en MB (NULL = Desactivado)
-      p_enable_deep_scan    => FALSE,            -- Escaneo profundo bloque a bloque
-      p_keep_history        => TRUE              -- Retención de auditoría en vacuum_full_tasks
+      p_scope                 => 'SMART_USER',       -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')
+      p_profile               => 'SMART',            -- Modo ('SMART' o 'FORCE_SURGERY')
+      p_parallel_workers      => 1,                  -- Hilos paralelos (Tope de seguridad: 1 a 2)
+      p_cutoff_time           => '05:00:00'::TIME,   -- Hora límite / Kill-Switch (05:00 AM)
+      p_kill_active_on_cutoff => TRUE,               -- Interrupción activa de procesos RUNNING al alcanzar cutoff (SIGINT -> SIGTERM -> Detach)
+      p_verbose               => FALSE,              -- Salida de diagnóstico en consola
+      p_bloat_pct_threshold => 25.00,              -- Umbral de % de bloat (>= 25%)
+      p_bloat_mb_threshold  => 1024.00,            -- Umbral de bloat en MB (>= 1 GB)
+      p_threshold_operator  => 'OR',                 -- Compuerta lógica ('OR' / 'AND')
+      p_sustained_days      => 5,                  -- Días consecutivos requeridos en el radar, para desactivarlo coloca 1
+      p_min_table_mb        => 50.00,              -- Tamaño mínimo de tabla a evaluar (>= 50 MB)
+      p_force_bloat_mb      => NULL,               -- Bypass por tamaño masivo en MB (NULL = Desactivado)
+      p_enable_deep_scan    => FALSE,              -- Escaneo profundo bloque a bloque
+      p_keep_history        => TRUE                -- Retención de auditoría en vacuum_full_tasks
   );
 $$,
 'mi_base_de_datos', 'postgres', true);
+
 
 ```
 
@@ -130,25 +133,27 @@ $$,
 SELECT * FROM public.pg_background_launch(
     $$
     CALL maint.sp_orchestrate_vacuum_full(
-        p_scope               => 'SMART_USER',
-        p_profile             => 'SMART',
-        p_parallel_workers    => 1,
-        p_cutoff_time         => NULL,
-        p_verbose             => TRUE,
-        p_bloat_pct_threshold => 25.00,
-        p_bloat_mb_threshold  => 1024.00,
-        p_threshold_operator  => 'OR',
-        p_sustained_days      => 5,
-        p_min_table_mb        => 50.00,
-        p_force_bloat_mb      => 5000.00,        -- Bypass de emergencia: Tablas con >= 5 GB de bloat entran directo
-        p_enable_deep_scan    => FALSE,
-        p_keep_history        => TRUE
+        p_scope                 => 'SMART_USER',
+        p_profile               => 'SMART',
+        p_parallel_workers      => 1,
+        p_cutoff_time           => NULL,
+        p_kill_active_on_cutoff => FALSE,
+        p_verbose               => TRUE,
+        p_bloat_pct_threshold   => 25.00,
+        p_bloat_mb_threshold    => 1024.00,
+        p_threshold_operator    => 'OR',
+        p_sustained_days        => 5,
+        p_min_table_mb          => 50.00,
+        p_force_bloat_mb        => 5000.00,        -- Bypass de emergencia: Tablas con >= 5 GB de bloat entran directo
+        p_enable_deep_scan      => FALSE,
+        p_keep_history          => TRUE
     );
     $$
 );
 
 -- Obtener el resultado del proceso hijo mediante su PID devuelto:
 -- SELECT * FROM public.pg_background_result(PID_OBTENIDO) AS (result TEXT);
+
 
 ```
 
@@ -183,6 +188,7 @@ SELECT
 FROM maint.vacuum_full_tasks
 ORDER BY task_id ASC;
 
+
 ```
 
 ---
@@ -194,7 +200,8 @@ ORDER BY task_id ASC;
 | `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Universo de tablas a evaluar. Valores: `'SMART_USER'`, `'SMART_SYSTEM_USER'`, `'SMART_SYSTEM'`, `'CUSTOM_LIST'`. |
 | `p_profile` | `VARCHAR` | `'SMART'` | **Perfil Operativo.** Valores: `'SMART'` (Evaluación por historial de días) y `'FORCE_SURGERY'` (Cirugía directa sobre la lista blanca de `maint.filters`). |
 | `p_parallel_workers` | `INT` | `1` | **Concurrencia de Hilos.** Cantidad de tablas a intervenir en paralelo. **Tope estricto de seguridad: 1 a 2 hilos.** |
-| `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Hora límite (Ej. `'05:00:00'::TIME`). Aborta las tareas pendientes en cola para no invadir el horario operativo diurno. |
+| `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Hora límite (Ej. `'05:00:00'::TIME`). Omite tareas pendientes e interrumpe activamente tareas RUNNING (si `p_kill_active_on_cutoff = TRUE`). |
+| `p_kill_active_on_cutoff` | `BOOLEAN` | `FALSE` | **Válvula de Aniquilación Activa.** Si es `TRUE` y se alcanza el `p_cutoff_time`, fuerza la cancelación/terminación activa de las tareas en estado `RUNNING` (`pg_cancel_backend` -> `pg_terminate_backend` -> `pg_background_detach`). |
 | `p_verbose` | `BOOLEAN` | `FALSE` | **Modo Diagnóstico.** Imprime detalles en tiempo real sobre PIDs, inodos físicos, tiempos y progreso de la cirugía. |
 | `p_bloat_pct_threshold` | `NUMERIC` | `25.00` | **Umbral Porcentual de Bloat (%).** Porcentaje mínimo de espacio muerto/libre para requerir cirugía. |
 | `p_bloat_mb_threshold` | `NUMERIC` | `1024.00` | **Umbral Absoluto de Bloat (MB).** Espacio mínimo en Megabytes desperdiciados en disco para requerir cirugía. |
@@ -213,7 +220,7 @@ ORDER BY task_id ASC;
 
 * **`RUNNING`**: El orquestador principal (Job Padre) está activo despachando o monitoreando trabajadores de cirugía mayor.
 * **`COMPLETED`**: El orquestador concluyó el ciclo de trabajo exitosamente.
-* **`COMPLETED_WITH_CUTOFF`**: El orquestador alcanzó la hora límite (`p_cutoff_time`), detuvo el despacho de nuevas tareas y cerró el Job de forma limpia.
+* **`COMPLETED_WITH_CUTOFF`**: El orquestador alcanzó la hora límite (`p_cutoff_time`), detuvo el despacho de nuevas tareas, limpió/canceló las activas (si aplicaba) y cerró el Job de forma limpia.
 * **`ABORTED_ORPHAN`**: El proceso orquestador principal sufrió una interrupción abrupta (caída de red, término de backend) y fue conciliado por el procedimiento de *Self-Healing* en la siguiente ejecución.
 
 ### 2. Para la Cola de Tareas Hijas (`maint.vacuum_full_tasks`):
@@ -224,4 +231,5 @@ ORDER BY task_id ASC;
 * **`FAILED`**: La reescritura falló a nivel del motor SQL (ejemplo: falta de espacio en disco, cancelación de consulta). El error nativo queda registrado en `error_log`.
 * **`FAILED_SILENT_ANOMALY`**: El comando SQL finalizó sin error, pero el inodo en disco no cambió (`old_relfilenode = new_relfilenode`).
 * **`SKIPPED_TIME_LIMIT`**: La tarea permanecía en estado `PENDING` cuando el orquestador activó el freno de emergencia por hora límite (`p_cutoff_time`).
+* **`ABORTED_BY_CUTOFF`**: La tarea se encontraba en estado `RUNNING` al momento de alcanzar el `p_cutoff_time` y fue cancelada/terminada activamente por el orquestador debido a la bandera `p_kill_active_on_cutoff = TRUE`.
 * **`ABORTED_ORPHAN`**: La tarea quedó congelada en `RUNNING` debido a la muerte del proceso Padre y fue cerrada por el procedimiento de *Self-Healing*.
