@@ -79,9 +79,9 @@ El orquestador `maint.sp_orchestrate_vacuum_full` evalúa el alcance, el perfil 
 
 | Valor | Descripción | ¿Requiere Evaluación Histórica? |
 | --- | --- | --- |
-| **`ALL_USER`** *(Default)* | Procesa tablas de esquemas de usuario (excluye catálogos de sistema y el esquema `maint`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
-| **`ALL_SYSTEM_USER`** | Evalúa tablas de usuario y catálogos internos de PostgreSQL. | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
-| **`ALL_SYSTEM`** | Restringe la evaluación a catálogos del motor (`pg_catalog`, `information_schema`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
+| **`SMART_USER`** *(Default)* | Procesa tablas de esquemas de usuario (excluye catálogos de sistema y el esquema `maint`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
+| **`SMART_SYSTEM_USER`** | Evalúa tablas de usuario y catálogos internos de PostgreSQL. | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
+| **`SMART_SYSTEM`** | Restringe la evaluación a catálogos del motor (`pg_catalog`, `information_schema`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
 | **`CUSTOM_LIST`** | Procesa únicamente las tablas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** (Si se ejecuta con `FORCE_SURGERY`) |
 
 ### ⚙️ Perfiles de Ejecución (`p_profile`)
@@ -104,7 +104,7 @@ Debido al uso de `AccessExclusiveLock`, las ejecuciones deben programarse en ven
 SELECT cron.schedule_in_database('vanguard_daily_vacuum_full', '0 1 * * *',
 $$
   CALL maint.sp_orchestrate_vacuum_full(
-      p_scope               => 'ALL_USER',       -- Alcance ('ALL_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM', 'CUSTOM_LIST')
+      p_scope               => 'SMART_USER',       -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')
       p_profile             => 'SMART',          -- Modo ('SMART' o 'FORCE_SURGERY')
       p_parallel_workers    => 1,                -- Hilos paralelos (Tope de seguridad: 1 a 2)
       p_cutoff_time         => '05:00:00'::TIME, -- Hora límite / Kill-Switch (05:00 AM)
@@ -130,7 +130,7 @@ $$,
 SELECT * FROM public.pg_background_launch(
     $$
     CALL maint.sp_orchestrate_vacuum_full(
-        p_scope               => 'ALL_USER',
+        p_scope               => 'SMART_USER',
         p_profile             => 'SMART',
         p_parallel_workers    => 1,
         p_cutoff_time         => NULL,
@@ -191,7 +191,7 @@ ORDER BY task_id ASC;
 
 | Parámetro | Tipo | Default | Descripción y Uso Operativo |
 | --- | --- | --- | --- |
-| `p_scope` | `VARCHAR` | `'ALL_USER'` | **Ámbito de Cobertura.** Universo de tablas a evaluar. Valores: `'ALL_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`, `'CUSTOM_LIST'`. |
+| `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Universo de tablas a evaluar. Valores: `'SMART_USER'`, `'SMART_SYSTEM_USER'`, `'SMART_SYSTEM'`, `'CUSTOM_LIST'`. |
 | `p_profile` | `VARCHAR` | `'SMART'` | **Perfil Operativo.** Valores: `'SMART'` (Evaluación por historial de días) y `'FORCE_SURGERY'` (Cirugía directa sobre la lista blanca de `maint.filters`). |
 | `p_parallel_workers` | `INT` | `1` | **Concurrencia de Hilos.** Cantidad de tablas a intervenir en paralelo. **Tope estricto de seguridad: 1 a 2 hilos.** |
 | `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Hora límite (Ej. `'05:00:00'::TIME`). Aborta las tareas pendientes en cola para no invadir el horario operativo diurno. |
