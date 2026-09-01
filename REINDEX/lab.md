@@ -227,7 +227,7 @@ Ejecutamos el escaneo B-Tree síncrono inyectando el nuevo parámetro `p_bloat_p
 
 ```sql
 CALL maint.sp_pgstatindex(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_frag_pct_threshold  => 20.00,        -- Umbral: Mayor o igual a 20% de fragmentación
     p_bloat_pct_threshold => 20.00,        -- [NUEVO V3.4.1] Umbral: Mayor o igual a 20% de espacio vacío
     p_bloat_mb_threshold  => 1.00,         -- Umbral: Mayor o igual a 1 MB de Bloat
@@ -301,7 +301,7 @@ Ejecutamos el orquestador en modo `CONCURRENT` utilizando la triple evaluación.
 
 ```sql
 CALL maint.sp_orchestrate_reindex(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'CONCURRENT',
     p_parallel_workers    => 2,             
     p_cutoff_time         => NULL,
@@ -329,7 +329,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluados: 7, Requieren REINDEX: 3
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V3.4.1)
-INFO:  ALCANCE: ALL_USER | HILOS: 2 | CUTOFF: SIN LIMITE | REBUILD ZOMBIS: t
+INFO:  ALCANCE: SMART_USER | HILOS: 2 | CUTOFF: SIN LIMITE | REBUILD ZOMBIS: t
 INFO:  =========================================================
 INFO:      [>] LANZANDO [REINDEX] PID 1373716 -> lab.idx_bloat_heavy (OLD NODE: 1814428) | Frag: %49.97 | Bloat: %32.49 / 5146.42 KB
 INFO:      [>] LANZANDO [REINDEX] PID 1373717 -> lab.idx_vip_facturas (OLD NODE: 1814429) | Frag: %49.28 | Bloat: %37.83 / 847.39 KB
@@ -403,7 +403,7 @@ SET status = 'RUNNING', child_pid = 999999
 WHERE job_id = 1 AND index_name = 'idx_bloat_heavy';
 
 CALL maint.sp_orchestrate_reindex(
-    p_scope            => 'ALL_USER',
+    p_scope            => 'SMART_USER',
     p_profile          => 'CONCURRENT',
     p_parallel_workers => 1,
     p_verbose          => TRUE
@@ -612,9 +612,9 @@ ORDER BY job_id DESC;
 ```text
  job_id |       job_type       | maintenance_action | orchestrator_pid | status    | indices_procesados |          started_at           |           ended_at            | duracion_total  
 --------+----------------------+--------------------+------------------+-----------+--------------------+-------------------------------+-------------------------------+-----------------
-      3 | ALL_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  0 | 2026-08-28 14:10:00.120541+00 | 2026-08-28 14:10:00.450123+00 | 00:00:00.329582
+      3 | SMART_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  0 | 2026-08-28 14:10:00.120541+00 | 2026-08-28 14:10:00.450123+00 | 00:00:00.329582
       2 | CUSTOM_LIST_FORCE... | REINDEX            |          1089100 | COMPLETED |                  1 | 2026-08-28 14:05:12.891230+00 | 2026-08-28 14:05:14.785332+00 | 00:00:01.894102
-      1 | ALL_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  2 | 2026-08-28 14:00:01.102340+00 | 2026-08-28 14:00:04.244358+00 | 00:00:03.142018
+      1 | SMART_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  2 | 2026-08-28 14:00:01.102340+00 | 2026-08-28 14:00:04.244358+00 | 00:00:03.142018
 (3 rows)
 
 ```
