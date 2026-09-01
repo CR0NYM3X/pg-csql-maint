@@ -90,6 +90,7 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_profile             => 'SMART',        -- Perfil: Basado en histórico de telemetría sostenida
     p_parallel_workers    => 1,              -- Máxima seguridad: 1 solo hilo (Bloqueo Total)
     p_cutoff_time         => '06:00:00'::TIME, -- Límite estricto de finalización para liberar sistema
+    p_kill_active_on_cutoff => TRUE,         --  Interrupción activa de procesos RUNNING al alcanzar cutoff
     p_verbose             => FALSE,          -- Diagnóstico: Silencioso
     
     -- UMBRALES INTERMEDIO-CRÍTICO (Extremo/Agresivo para EVITAR el bloqueo innecesario):
