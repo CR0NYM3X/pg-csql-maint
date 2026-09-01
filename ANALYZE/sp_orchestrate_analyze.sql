@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS maint.analyze_tasks (
     table_name TEXT NOT NULL,
     total_filas BIGINT,                      
     filas_afectadas BIGINT,                  
-    drift_pct NUMERIC(5,2),                  
+    drift_pct NUMERIC(30,2),                  
     status VARCHAR(30) DEFAULT 'PENDING', 
     child_pid INT,
     child_cookie BIGINT,                          -- [HOMOLOGACIÓN UNIVERSAL]: Token de seguridad v2.0
@@ -269,9 +269,10 @@ BEGIN
         END IF;
 
         -- POBLAR COLA PARA LA FASE ACTUAL
-        INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
-        SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, COALESCE(st.n_mod_since_analyze, 0),
-               ROUND((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100, 2), v_current_stage
+       -- Reemplaza la línea del SELECT en la inserción de maint.analyze_tasks por:
+       INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
+       SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, COALESCE(st.n_mod_since_analyze, 0),
+             LEAST(ROUND((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100, 2), 999999999.99), v_current_stage
         FROM pg_stat_all_tables st
         LEFT JOIN LATERAL (
             SELECT is_ignored, force_maintenance 
