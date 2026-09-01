@@ -207,7 +207,7 @@ Ejecutamos el procedimiento Triage para registrar el *bloat* en Kilobytes en la 
 
 ```sql
 CALL maint.sp_pgstattuple(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_bloat_pct_threshold => 50.00,
     p_bloat_mb_threshold  => 50.00,        -- Umbral regular (50 MB)
     p_threshold_operator => 'OR',         -- Compuerta entre % y MB ('OR' / 'AND')
@@ -434,7 +434,7 @@ Ejecutamos `sp_orchestrate_vacuum_full` en modo `SMART`. Evaluará las tablas de
 
 ```sql
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -460,7 +460,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
 INFO:  =========================================================
 INFO:      [>] LANZANDO [VACUUM FULL] PID 1010119 -> lab.demo_extreme_bloat (OLD NODE: 1807252) | Bloat: 239901.19 KB | Dias: 5
 INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_extreme_bloat (NODE: 1807252 -> 1807342)
@@ -482,7 +482,7 @@ Probamos la inyección del parámetro de rescate de espacio en disco. Configuram
 
 ```sql
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -504,7 +504,7 @@ CALL maint.sp_orchestrate_vacuum_full(
 ```text
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 10.00
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 10.00
 INFO:  =========================================================
 INFO:      [>] ENCOLADO BYPASS (FORCE BLOAT 10240.00 KB) -> lab.demo_heavy_updates | Bloat: 11264.00 KB
 INFO:      [>] LANZANDO [VACUUM FULL] PID 861310 -> lab.demo_heavy_updates (OLD NODE: 245812)
@@ -650,7 +650,7 @@ ORDER BY total_bloat_pct DESC;
 ```sql
 
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -677,7 +677,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 7
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:      [>] LANZANDO [VACUUM FULL] PID 1012152 -> lab.demo_heavy_updates (OLD NODE: 1807261) | Bloat: 7614.53 KB | Dias: 0
 INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_heavy_updates (NODE: 1807261 -> 1807387)
@@ -732,10 +732,10 @@ select * from maint.vacuum_full_tasks where job_id = 6;
 ```
 -[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 job_id             | 6
-job_type           | ALL_USER_SMART_SURGERY
+job_type           | SMART_USER_SMART_SURGERY
 maintenance_action | VACUUM_FULL
 orchestrator_pid   | 1005502
-execution_params   | {"scope": "ALL_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
+execution_params   | {"scope": "SMART_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
 status             | RUNNING
 tables_processed   | 1
 started_at         | 2026-08-26 10:00:37.544795+00
@@ -762,7 +762,7 @@ error_log          |
 ### Ejecutar orquestador
 ```
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -789,7 +789,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 6
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:  [✓] ORQUESTACION FINALIZADA. Job 7 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
 CALL
@@ -808,10 +808,10 @@ select * from maint.vacuum_full_tasks where job_id = 6;
 ```
 -[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 job_id             | 6
-job_type           | ALL_USER_SMART_SURGERY
+job_type           | SMART_USER_SMART_SURGERY
 maintenance_action | VACUUM_FULL
 orchestrator_pid   | 1005502
-execution_params   | {"scope": "ALL_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
+execution_params   | {"scope": "SMART_USER", "profile": "SMART", "cutoff_time": null, "keep_history": true, "force_bloat_mb": 7, "sustained_days": 5, "enable_deep_scan": false, "parallel_workers": 1, "bloat_mb_threshold": 5.00, "threshold_operator": "OR", "bloat_pct_threshold": 40.00, "force_bloat_kb_calc": 7168.00, "bloat_kb_threshold_calc": 5120.00}
 status             | ABORTED_ORPHAN
 tables_processed   | 0
 started_at         | 2026-08-26 10:00:37.544795+00
@@ -915,7 +915,7 @@ delete  from maint.filters  where table_name = 'demo_escudo_historial';
 No seberia encontrar esto debido a que los ultimos 5 días solo el 
 ```
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -940,7 +940,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 4
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:  [✓] ORQUESTACION FINALIZADA. Job 11 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
 CALL
@@ -995,7 +995,7 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
 No seberia encontrar esto debido a que los ultimos 5 días solo el 
 ```
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',
+    p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
     p_parallel_workers    => 1,
     p_cutoff_time         => NULL,
@@ -1020,7 +1020,7 @@ INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: ALL_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:      [>] LANZANDO [VACUUM FULL] PID 1077106 -> lab.demo_escudo_historial (OLD NODE: 1807279) | Bloat: 2349.72 KB | Dias: 5
 INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_escudo_historial (NODE: 1807279 -> 1808265)
