@@ -28,7 +28,7 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.jobs (
     job_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    job_type VARCHAR(50) NOT NULL,              -- Ej. 'ALL_USER_CONCURRENT', 'CUSTOM_LIST_FORCE_SURGERY'
+    job_type VARCHAR(50) NOT NULL,              -- Ej. 'SMART_USER_CONCURRENT', 'CUSTOM_LIST_FORCE_SURGERY'
     maintenance_action VARCHAR(20) NOT NULL,    -- 'ANALYZE', 'VACUUM', 'VACUUM_FULL', 'REINDEX'
     orchestrator_pid INT NOT NULL,              -- PID del proceso principal (Padre) para Self-Healing
     execution_params JSONB NOT NULL,             -- Fotografía inmutable de los parámetros
@@ -144,7 +144,7 @@ ON maint.reindex_tasks (job_id, status, task_id);
 -- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V3.4.1)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_pgstatindex(
-    p_scope VARCHAR DEFAULT 'ALL_USER',
+    p_scope VARCHAR DEFAULT 'SMART_USER',
     p_frag_pct_threshold NUMERIC DEFAULT 40.00,
     p_bloat_pct_threshold NUMERIC DEFAULT 20.00, -- [NUEVO] Umbral de % de Bloat (Espacio Libre)
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
@@ -188,7 +188,7 @@ BEGIN
         WHERE c.relkind = 'i' AND c.relam = (SELECT oid FROM pg_am WHERE amname = 'btree')
           AND n.nspname <> 'pg_toast' AND n.nspname <> 'maint' -- ESCUDO ACTIVO
           AND pg_relation_size(i.indexrelid) >= (p_min_index_mb * 1024 * 1024)
-          AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'ALL_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'ALL_SYSTEM_USER') OR (p_scope = 'ALL_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema')))
+          AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'SMART_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'SMART_SYSTEM_USER') OR (p_scope = 'SMART_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema')))
     ) LOOP
         BEGIN
             v_size_kb := ROUND((r_idx.size_bytes / 1024.0)::numeric, 2);
@@ -243,7 +243,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 -- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V3.4.2 (Universal Polimórfico)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
-    p_scope VARCHAR DEFAULT 'ALL_USER',
+    p_scope VARCHAR DEFAULT 'SMART_USER',
     p_profile VARCHAR DEFAULT 'CONCURRENT',     
     p_parallel_workers INT DEFAULT 2,           -- Rango estricto permitido: 1 a 4
     p_cutoff_time TIME DEFAULT NULL,
@@ -311,7 +311,7 @@ BEGIN
     IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN RAISE EXCEPTION 'CRÍTICO [RECURSOS]: max_worker_processes insuficiente.'; END IF;
     IF p_parallel_workers < 1 OR p_parallel_workers > 4 THEN RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Para REINDEX, p_parallel_workers debe estar entre 1 y 4.'; END IF;
     IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRÍTICO: Perfil inválido.'; END IF;
-    IF UPPER(p_scope) NOT IN ('ALL_USER', 'ALL_SYSTEM', 'ALL_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRÍTICO: Ámbito inválido.'; END IF;
+    IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRÍTICO: Ámbito inválido.'; END IF;
     IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN RAISE EXCEPTION 'ALERTA ROJA: FORCE_SURGERY requiere CUSTOM_LIST.'; END IF;
 
     -- =====================================================================
@@ -361,7 +361,7 @@ BEGIN
         FROM maint.pgstatindex t
         LEFT JOIN maint.filters mf ON mf.schema_name = t.schema_name AND mf.table_name = t.table_name AND mf.maintenance_action IN ('ALL', 'REINDEX')
         WHERE t.evaluation_date = CURRENT_DATE AND t.schema_name <> 'maint' AND COALESCE(mf.is_ignored, FALSE) = FALSE
-          AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'ALL_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'ALL_SYSTEM_USER') OR (p_scope = 'ALL_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema')))
+          AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'SMART_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'SMART_SYSTEM_USER') OR (p_scope = 'SMART_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema')))
     ) LOOP
 
         IF v_profile_upper = 'FORCE_SURGERY' THEN
