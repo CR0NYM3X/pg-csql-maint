@@ -112,7 +112,7 @@ $$
       p_bloat_pct_threshold => 25.00,            -- Umbral de % de bloat (>= 25%)
       p_bloat_mb_threshold  => 1024.00,          -- Umbral de bloat en MB (>= 1 GB)
       p_threshold_operator  => 'OR',             -- Compuerta lógica ('OR' / 'AND')
-      p_sustained_days      => 5,                -- Días consecutivos requeridos en el radar
+      p_sustained_days      => 5,                -- Días consecutivos requeridos en el radar, para desactivarlo coloca 1
       p_min_table_mb        => 50.00,            -- Tamaño mínimo de tabla a evaluar (>= 50 MB)
       p_force_bloat_mb      => NULL,             -- Bypass por tamaño masivo en MB (NULL = Desactivado)
       p_enable_deep_scan    => FALSE,            -- Escaneo profundo bloque a bloque
