@@ -82,27 +82,27 @@ CREATE TABLE IF NOT EXISTS maint.pgstattuple (
     approx_scanned BOOLEAN NOT NULL DEFAULT FALSE, 
     approx_evaluated_at TIMESTAMPTZ, 
     approx_table_len BIGINT, 
-    approx_scanned_percent NUMERIC(5,2),
+    approx_scanned_percent NUMERIC(12,2),
     approx_tuple_count BIGINT,
     approx_tuple_len BIGINT,
-    approx_tuple_percent NUMERIC(5,2),
+    approx_tuple_percent NUMERIC(12,2),
     approx_dead_tuple_count BIGINT,
     approx_dead_tuple_len BIGINT,
-    approx_dead_tuple_percent NUMERIC(5,2),
+    approx_dead_tuple_percent NUMERIC(12,2),
     approx_free_space BIGINT,
-    approx_free_percent NUMERIC(5,2),
+    approx_free_percent NUMERIC(12,2),
     
     deep_scanned BOOLEAN NOT NULL DEFAULT FALSE, 
     deep_evaluated_at TIMESTAMPTZ, 
     deep_table_len BIGINT, 
     deep_tuple_count BIGINT,
     deep_tuple_len BIGINT,
-    deep_tuple_percent NUMERIC(5,2),
+    deep_tuple_percent NUMERIC(12,2),
     deep_dead_tuple_count BIGINT,
     deep_dead_tuple_len BIGINT,
-    deep_dead_tuple_percent NUMERIC(5,2),
+    deep_dead_tuple_percent NUMERIC(12,2),
     deep_free_space BIGINT,
-    deep_free_percent NUMERIC(5,2),
+    deep_free_percent NUMERIC(12,2),
     
     total_bloat_kb NUMERIC(14,2) NOT NULL DEFAULT 0.00,
     total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS maint.vacuum_full_tasks (
     job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE,
     schema_name VARCHAR(255) NOT NULL,
     table_name VARCHAR(255) NOT NULL,
-    bloat_pct_evaluado NUMERIC(5,2) NOT NULL,
+    bloat_pct_evaluado NUMERIC(12,2) NOT NULL,
     bloat_kb_evaluado NUMERIC(14,2) NOT NULL,
     sustained_days_met INT NOT NULL, 
     old_relfilenode BIGINT,               -- Checksum Físico: Inodo de archivo ANTES de la cirugía
@@ -164,7 +164,7 @@ DECLARE
     v_today DATE := current_date; 
     v_processed INT := 0; v_sniped INT := 0;
     v_requiere_vf_count INT := 0;
-    v_total_bloat_pct NUMERIC(5,2); 
+    v_total_bloat_pct NUMERIC(12,2); 
     v_total_bloat_kb NUMERIC(14,2);
     v_threshold_kb NUMERIC(14,2) := (p_bloat_mb_threshold * 1024.0);
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
@@ -435,13 +435,13 @@ BEGIN
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
-    -- 3. Poblar Cola
+   -- 3. Poblar Cola (Protección contra numeric field overflow con LEAST)
     FOR r_table IN (
         SELECT t.schema_name, t.table_name, t.total_bloat_kb, t.total_bloat_pct
         FROM maint.pgstattuple t
         LEFT JOIN maint.filters mf ON mf.schema_name = t.schema_name AND mf.table_name = t.table_name AND mf.maintenance_action IN ('ALL', 'VACUUM_FULL')
         WHERE t.evaluation_date = CURRENT_DATE
-          AND t.schema_name <> 'maint' -- [ESCUDO ACTIVO]: El orquestador JAMÁS encola sus propias tablas para cirugía mayor.
+          AND t.schema_name <> 'maint'
           AND COALESCE(mf.is_ignored, FALSE) = FALSE
           AND (
               (p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR
@@ -452,14 +452,14 @@ BEGIN
     ) LOOP
         IF v_profile_upper = 'FORCE_SURGERY' THEN
             INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
-            VALUES (v_job_id, r_table.schema_name, r_table.table_name, r_table.total_bloat_pct, r_table.total_bloat_kb, 0, 'PENDING');
+            VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, 0, 'PENDING');
             v_total_tasks := v_total_tasks + 1;
         ELSE
             v_force_bypass := (v_force_bloat_kb IS NOT NULL AND r_table.total_bloat_kb >= v_force_bloat_kb);
 
             IF v_force_bypass THEN
                 INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
-                VALUES (v_job_id, r_table.schema_name, r_table.table_name, r_table.total_bloat_pct, r_table.total_bloat_kb, 0, 'PENDING');
+                VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, 0, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
             ELSIF (
                 (v_op_upper = 'AND' AND r_table.total_bloat_pct >= p_bloat_pct_threshold AND r_table.total_bloat_kb >= v_bloat_kb_threshold) OR
@@ -475,13 +475,14 @@ BEGIN
 
                 IF v_hist_total >= p_sustained_days AND v_hist_total = v_hist_true THEN
                     INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
-                    VALUES (v_job_id, r_table.schema_name, r_table.table_name, r_table.total_bloat_pct, r_table.total_bloat_kb, v_hist_total, 'PENDING');
+                    VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, v_hist_total, 'PENDING');
                     v_total_tasks := v_total_tasks + 1;
                 END IF;
             END IF;
         END IF;
     END LOOP;
     COMMIT;
+
 
     -- 4. Salida Temprana
     IF v_total_tasks = 0 THEN
