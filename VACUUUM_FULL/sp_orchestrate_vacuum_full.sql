@@ -562,7 +562,7 @@ BEGIN
 
             SELECT task_id, schema_name, table_name, bloat_kb_evaluado, sustained_days_met 
             INTO v_task_id, v_schema, v_table, v_bloat_kb_eval, v_days_met 
-            FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY task_id ASC LIMIT 1;
+            FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY bloat_kb_evaluado ASC, task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
                 -- Captura del relfilenode actual en el milisegundo previo al lanzamiento
