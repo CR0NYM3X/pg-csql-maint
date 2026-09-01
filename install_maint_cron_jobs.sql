@@ -111,6 +111,7 @@ SELECT cron.schedule_in_database(
             p_profile             => 'SMART',          -- Perfil: Basado en histórico de telemetría sostenida
             p_parallel_workers    => 1,                -- Máxima seguridad: 1 solo hilo (Bloqueo Total)
             p_cutoff_time         => '05:50:00'::TIME, -- Límite estricto de finalización para liberar sistema
+            p_kill_active_on_cutoff => TRUE,           -- Cierra procesos RUNNING al alcanzar el tiempo en p_cutoff_time.            
             p_verbose             => FALSE,            -- Diagnóstico: Silencioso
             
             -- UMBRALES INTERMEDIO-CRÍTICO (Extremo/Agresivo para EVITAR el bloqueo innecesario):
