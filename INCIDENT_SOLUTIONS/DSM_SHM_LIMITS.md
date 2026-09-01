@@ -19,7 +19,7 @@
 Durante la ejecución del orquestador asíncrono de mantenimiento `maint.sp_orchestrate_vacuum` en un entorno On-Premise con volúmenes de datos superiores a 1 Terabyte y alta concurrencia (`p_parallel_workers` elevado), algunas tareas individuales comenzaron a fallar registrando el siguiente error en la bitácora `maint.vacuum_tasks`:
 
 ```text
-WARNING: [ERROR] FALLO EN psql.stt_emp_coppel: could not resize shared memory segment "/PostgreSQL.2166917130" to 966459456 bytes: No space left on device
+WARNING: [ERROR] FALLO EN psql.stt_emp: could not resize shared memory segment "/PostgreSQL.2166917130" to 966459456 bytes: No space left on device
 WARNING: [ERROR] FALLO EN mssql.auditinfo_activeusers: could not resize shared memory segment "/PostgreSQL.3224282154" to 1073800736 bytes: No space left on device
 
 ```
