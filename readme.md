@@ -86,7 +86,7 @@ El único módulo que aplica bloqueos exclusivos (`AccessExclusiveLock`). Calibr
 ```sql
 -- Ejecución recomendada: 1 vez al mes (Exclusivamente en Ventana de Mantenimiento)
 CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',     -- Alcance: Tablas de usuario a evaluación estricta
+    p_scope               => 'SMART_USER',     -- Alcance: Tablas de usuario a evaluación estricta
     p_profile             => 'SMART',        -- Perfil: Basado en histórico de telemetría sostenida
     p_parallel_workers    => 1,              -- Máxima seguridad: 1 solo hilo (Bloqueo Total)
     p_cutoff_time         => '06:00:00'::TIME, -- Límite estricto de finalización para liberar sistema
@@ -114,7 +114,7 @@ Sanea índices zombis y reconstruye árboles B-Tree en caliente (`CONCURRENTLY`)
 ```sql
 -- Ejecución recomendada: Fines de semana o madrugadas (ej. Viernes 11:00 PM)
 CALL maint.sp_orchestrate_reindex(
-    p_scope               => 'ALL_USER',     -- Alcance: Todos los índices de usuario a evaluación
+    p_scope               => 'SMART_USER',     -- Alcance: Todos los índices de usuario a evaluación
     p_profile             => 'CONCURRENT',   -- Perfil: Reconstrucción online Cero-Bloqueo
     p_parallel_workers    => 2,              -- Seguridad I/O: Limitado a 2 hilos para cuidar el disco
     p_cutoff_time         => '06:00:00'::TIME, -- Freno de emergencia: Abortar si alcanza las 4 AM
