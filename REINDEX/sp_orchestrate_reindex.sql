@@ -452,7 +452,7 @@ BEGIN
 
             SELECT task_id, schema_name, table_name, index_name, bloat_kb_evaluado, bloat_pct_evaluado, frag_pct_evaluado, is_invalid 
             INTO v_task_id, v_schema, v_table, v_index, v_bloat_kb_eval, v_bloat_pct_eval, v_frag_pct_eval, r_idx.is_invalid 
-            FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, task_id ASC LIMIT 1;
+            FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, bloat_kb_evaluado ASC, task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
                 SELECT c.relfilenode INTO v_old_node FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = v_schema AND c.relname = v_index;
