@@ -80,13 +80,13 @@ CREATE TABLE IF NOT EXISTS maint.pgstatindex (
     table_name VARCHAR(255) NOT NULL,
     index_name VARCHAR(255) NOT NULL,
     
-    index_size_kb NUMERIC(14,2) NOT NULL DEFAULT 0.00,
-    leaf_fragmentation_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00,
-    avg_leaf_density_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00,
-    empty_pages_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00,
+    index_size_kb NUMERIC(20,2) NOT NULL DEFAULT 0.00,
+    leaf_fragmentation_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+    avg_leaf_density_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+    empty_pages_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
     
-    total_bloat_kb NUMERIC(14,2) NOT NULL DEFAULT 0.00,
-    total_bloat_pct NUMERIC(5,2) NOT NULL DEFAULT 0.00, -- [NUEVO] Porcentaje de espacio libre recuperable
+    total_bloat_kb NUMERIC(20,2) NOT NULL DEFAULT 0.00,
+    total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00, -- [NUEVO] Porcentaje de espacio libre recuperable
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     requiere_reindex BOOLEAN NOT NULL DEFAULT FALSE,
     
@@ -363,17 +363,21 @@ BEGIN
         WHERE t.evaluation_date = CURRENT_DATE AND t.schema_name <> 'maint' AND COALESCE(mf.is_ignored, FALSE) = FALSE
           AND ((p_scope = 'CUSTOM_LIST' AND mf.force_maintenance = TRUE) OR (p_scope = 'ALL_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'ALL_SYSTEM_USER') OR (p_scope = 'ALL_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema')))
     ) LOOP
+
         IF v_profile_upper = 'FORCE_SURGERY' THEN
-            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) 
+            VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
             v_total_tasks := v_total_tasks + 1;
         ELSE
             v_force_bypass := ((p_force_frag_pct IS NOT NULL AND r_idx.leaf_fragmentation_pct >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND r_idx.total_bloat_kb >= v_force_bloat_kb));
 
             IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR ((v_op_upper = 'AND' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR (r_idx.total_bloat_pct >= p_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold)))) OR ((v_op_upper = 'OR' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_pct >= p_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))) THEN
-                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, r_idx.leaf_fragmentation_pct, r_idx.total_bloat_pct, r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) 
+                VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
             END IF;
         END IF;
+
     END LOOP;
     
     -- LIBERACIÓN CRÍTICA 2: Cierra el snapshot del encolado
