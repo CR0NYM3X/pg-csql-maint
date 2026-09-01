@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (VACUUM FULL)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.4.9 (Grado Diamante - relfilenode Checksum & Universal Late Binding)
+   VERSIÓN: 3.5.0 (Grado Diamante - relfilenode Checksum & Universal Late Binding)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -282,19 +282,20 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 -- 7. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_vacuum_full (V3.4.9 Polimórfico Universal)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
-    p_scope VARCHAR DEFAULT 'SMART_USER',         -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
-    p_profile VARCHAR DEFAULT 'SMART',          -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
-    p_parallel_workers INT DEFAULT 1,           -- Rango estricto permitido: 1 a 2
-    p_cutoff_time TIME DEFAULT NULL,
-    p_verbose BOOLEAN DEFAULT FALSE,
-    p_bloat_pct_threshold NUMERIC DEFAULT 25.00,
-    p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
-    p_threshold_operator VARCHAR DEFAULT 'OR',
-    p_sustained_days INT DEFAULT 5,
-    p_min_table_mb NUMERIC DEFAULT 50.00,
-    p_force_bloat_mb NUMERIC DEFAULT NULL,      -- Bypass de emergencia en MB
-    p_enable_deep_scan BOOLEAN DEFAULT FALSE,
-    p_keep_history BOOLEAN DEFAULT TRUE
+    p_scope                 VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
+    p_profile               VARCHAR DEFAULT 'SMART',            -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
+    p_parallel_workers      INT DEFAULT 1,                      -- Rango estricto permitido: 1 a 2
+    p_cutoff_time           TIME DEFAULT NULL,
+    p_kill_active_on_cutoff BOOLEAN DEFAULT FALSE,              -- [NUEVO V3.5.0]: Interrupción activa de procesos RUNNING al alcanzar cutoff
+    p_verbose               BOOLEAN DEFAULT FALSE,
+    p_bloat_pct_threshold   NUMERIC DEFAULT 25.00,
+    p_bloat_mb_threshold    NUMERIC DEFAULT 1024.00,
+    p_threshold_operator    VARCHAR DEFAULT 'OR',
+    p_sustained_days        INT DEFAULT 5,
+    p_min_table_mb          NUMERIC DEFAULT 50.00,
+    p_force_bloat_mb        NUMERIC DEFAULT NULL,              -- Bypass de emergencia en MB
+    p_enable_deep_scan      BOOLEAN DEFAULT FALSE,
+    p_keep_history          BOOLEAN DEFAULT TRUE
 )
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -399,17 +400,17 @@ BEGIN
             p_bloat_pct_threshold  => p_bloat_pct_threshold,
             p_bloat_mb_threshold   => p_bloat_mb_threshold,
             p_threshold_operator  => p_threshold_operator,
-            p_min_table_mb         => p_min_table_mb,
-            p_enable_deep_scan     => p_enable_deep_scan,
+            p_min_table_mb          => p_min_table_mb,
+            p_enable_deep_scan      => p_enable_deep_scan,
             p_verbose              => p_verbose
         );
     END IF;
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4.9 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
-        RAISE INFO 'ALCANCE: % | MODO: % | HILOS: % | CUTOFF: % | FORCE_MB: %', 
-                   p_scope, v_profile_upper, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), COALESCE(p_force_bloat_mb::TEXT, 'DESACTIVADO');
+        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.5.0 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO 'ALCANCE: % | MODO: % | HILOS: % | CUTOFF: % | KILL_CUTOFF: % | FORCE_MB: %', 
+                   p_scope, v_profile_upper, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_kill_active_on_cutoff, COALESCE(p_force_bloat_mb::TEXT, 'DESACTIVADO');
         RAISE INFO '=========================================================';
     END IF;
 
@@ -426,6 +427,7 @@ BEGIN
         'force_bloat_kb_calc', v_force_bloat_kb, 
         'enable_deep_scan', p_enable_deep_scan, 
         'cutoff_time', p_cutoff_time, 
+        'kill_active_on_cutoff', p_kill_active_on_cutoff,
         'keep_history', p_keep_history,
         'pg_background_version', COALESCE(v_ext_version, '1.x')
     );
@@ -546,9 +548,64 @@ BEGIN
             COMMIT; 
         END LOOP;
 
+        -- =====================================================================
+        -- CONTROL DE CUTOFF TIME CON VÁLVULA DE ANIQUILACIÓN ACTIVA (V3.5.0)
+        -- =====================================================================
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
-            UPDATE maint.vacuum_full_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' WHERE job_id = v_job_id AND status = 'PENDING'; 
+            
+            -- A. Inactivar tareas PENDING inmediatamente
+            UPDATE maint.vacuum_full_tasks 
+            SET status = 'SKIPPED_TIME_LIMIT', ended_at = clock_timestamp(), error_log = 'Cutoff Time Reached (Pending)' 
+            WHERE job_id = v_job_id AND status = 'PENDING'; 
             COMMIT;
+
+            -- B. Aniquilación Activa de Trabajos RUNNING (Si p_kill_active_on_cutoff = TRUE)
+            IF p_kill_active_on_cutoff THEN
+                FOR r_finished IN 
+                    SELECT task_id, child_pid, child_cookie, schema_name, table_name 
+                    FROM maint.vacuum_full_tasks 
+                    WHERE job_id = v_job_id AND status = 'RUNNING'
+                LOOP
+                    BEGIN
+                        -- Paso 1: Cancelación suave (SIGINT)
+                        PERFORM pg_cancel_backend(r_finished.child_pid);
+                        
+                        -- Paso 2: Terminación forzada si el proceso no responde en 500ms (SIGTERM)
+                        PERFORM pg_sleep(0.5);
+                        IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = r_finished.child_pid) THEN
+                            PERFORM pg_terminate_backend(r_finished.child_pid);
+                        END IF;
+
+                        -- Paso 3: Purga de Memoria DSM en Kernel (Detach Defensivo Polimórfico)
+                        BEGIN
+                            IF v_is_v2 THEN
+                                EXECUTE 'SELECT public.pg_background_detach($1, $2)' USING r_finished.child_pid, r_finished.child_cookie;
+                            ELSE
+                                EXECUTE 'SELECT public.pg_background_detach($1)' USING r_finished.child_pid;
+                            END IF;
+                        EXCEPTION WHEN OTHERS THEN
+                            NULL; -- Memoria ya liberada por el sistema operativo
+                        END;
+
+                        -- Registro en bitácora forense
+                        UPDATE maint.vacuum_full_tasks 
+                        SET status = 'ABORTED_BY_CUTOFF', ended_at = clock_timestamp(), 
+                            error_log = 'Cirugía abortada forzosamente por haber alcanzado el Cutoff Time estricto.' 
+                        WHERE task_id = r_finished.task_id;
+                        
+                        IF p_verbose THEN 
+                            RAISE WARNING '[KILL CUTOFF] Abortado forzosamente VACUUM FULL en %.% (PID: %)', 
+                                          r_finished.schema_name, r_finished.table_name, r_finished.child_pid; 
+                        END IF;
+
+                    EXCEPTION WHEN OTHERS THEN
+                        UPDATE maint.vacuum_full_tasks 
+                        SET status = 'ABORTED_BY_CUTOFF', ended_at = clock_timestamp(), error_log = SQLERRM 
+                        WHERE task_id = r_finished.task_id;
+                    END;
+                    COMMIT;
+                END LOOP;
+            END IF;
         END IF;
 
         SELECT COUNT(*) INTO v_active_workers FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'RUNNING';
@@ -556,13 +613,16 @@ BEGIN
         
         IF v_active_workers = 0 AND v_pending_tasks = 0 THEN EXIT; END IF;
 
-        -- D. DESPACHADOR ENRIQUECIDO POLIMÓRFICO
+        -- D. DESPACHADOR ENRIQUECIDO POLIMÓRFICO (Estrategia Snowball: Bloat KB ASC)
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
             SELECT task_id, schema_name, table_name, bloat_kb_evaluado, sustained_days_met 
             INTO v_task_id, v_schema, v_table, v_bloat_kb_eval, v_days_met 
-            FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY bloat_kb_evaluado ASC, task_id ASC LIMIT 1;
+            FROM maint.vacuum_full_tasks 
+            WHERE job_id = v_job_id AND status = 'PENDING' 
+            ORDER BY bloat_kb_evaluado ASC, task_id ASC 
+            LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
                 -- Captura del relfilenode actual en el milisegundo previo al lanzamiento
@@ -612,7 +672,7 @@ BEGIN
     END IF;
 
     -- 6. Cierre normal de Job
-    IF EXISTS (SELECT 1 FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status = 'SKIPPED_TIME_LIMIT') THEN
+    IF EXISTS (SELECT 1 FROM maint.vacuum_full_tasks WHERE job_id = v_job_id AND status IN ('SKIPPED_TIME_LIMIT', 'ABORTED_BY_CUTOFF')) THEN
         UPDATE maint.jobs SET status = 'COMPLETED_WITH_CUTOFF', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
     ELSE
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = v_success_count WHERE job_id = v_job_id;
