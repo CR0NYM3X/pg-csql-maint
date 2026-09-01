@@ -31,7 +31,32 @@ A continuación, se presentan las rutinas de ejecución para cada uno de los 4 p
 
 > 💡 **Nota de Configuración Táctica:** Los valores de los ejemplos están calibrados según el impacto de la operación. `VACUUM` y `ANALYZE` utilizan umbrales **bajos/tranquilos** para mantenimiento preventivo diario. `REINDEX` usa umbrales **flexibles** para controlar el I/O, y `VACUUM FULL` usa umbrales **agresivos/restrictivos** para evitar cirugías bloqueantes a menos que la situación sea crítica.
 
-### 1. 🧹 Módulo VACUUM (Limpieza Asíncrona Non-Blocking)
+
+
+### 1. 📊 Módulo ANALYZE (Actualización del Optimizador)
+
+Refresca el mapa estadístico del planificador de consultas de PostgreSQL. Valores tranquilos para mantener el optimizador ágil.
+
+```sql
+-- Ejecución recomendada: 2 a 3 veces al día o tras cargas masivas (ETLs)
+CALL maint.sp_orchestrate_analyze(
+    p_scope             => 'SMART_USER',     -- Alcance: Estadísticas de esquemas de usuario
+    p_profile           => 'NORMAL',         -- Perfil: Analiza con muestra estándar del sistema
+    p_parallel_workers  => 4,                -- Concurrencia: Actualiza 4 tablas de forma simultánea
+    p_verbose           => FALSE,            -- Diagnóstico: Silencioso
+    
+    -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para planificador fresco):
+    p_threshold_pct     => 10.00,             -- Actúa si el 5% de la tabla ha sufrido modificaciones
+    p_min_chg_rows      => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
+    p_force_chg_rows    => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
+    
+    p_cutoff_time       => '06:00:00'::TIME, -- Límite horario para no solapar procesos matutinos
+    p_keep_history      => TRUE              -- Auditoría: Conservar log de ejecuciones
+);
+
+```
+
+### 2. 🧹 Módulo VACUUM (Limpieza Asíncrona Non-Blocking)
 
 Recupera espacio libre de tuplas muertas sin bloquear lecturas ni escrituras. Calibrado con valores bajos para ejecución diaria constante.
 
@@ -45,8 +70,8 @@ CALL maint.sp_orchestrate_vacuum(
     p_verbose           => FALSE,            -- Diagnóstico: Desactivado para ejecución silenciosa en Cron
     
     -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para barrido diario):
-    p_threshold_pct     => 5.00,             -- Mínimo de basura porcentual (5% de tuplas muertas)
-    p_min_dead_rows     => 5000,             -- Filtro anti-morralla (Ignora tablas con < 5,000 tuplas muertas)
+    p_threshold_pct     => 20.00,             -- Mínimo de basura porcentual (5% de tuplas muertas)
+    p_min_dead_rows     => 1000,             -- Filtro anti-morralla (Ignora tablas con < 5,000 tuplas muertas)
     p_force_dead_rows   => 50000,            -- Bypass de emergencia: Fuerza ejecución si supera 50,000 muertas
     
     p_keep_history      => TRUE              -- Auditoría: Conservar historial en maint.vacuum_tasks
@@ -54,30 +79,35 @@ CALL maint.sp_orchestrate_vacuum(
 
 ```
 
-### 2. 📊 Módulo ANALYZE (Actualización del Optimizador)
+### 3. 🏥 Módulo VACUUM FULL (Cirugía Mayor Físico-Forense)
 
-Refresca el mapa estadístico del planificador de consultas de PostgreSQL. Valores tranquilos para mantener el optimizador ágil.
+El único módulo que aplica bloqueos exclusivos (`AccessExclusiveLock`). Calibrado con umbrales extremadamente restrictivos para que **NUNCA** se ejecute a menos que la tabla represente una amenaza física y sostenida para el servidor.
 
 ```sql
--- Ejecución recomendada: 2 a 3 veces al día o tras cargas masivas (ETLs)
-CALL maint.sp_orchestrate_analyze(
-    p_scope             => 'SMART_USER',     -- Alcance: Estadísticas de esquemas de usuario
-    p_profile           => 'NORMAL',         -- Perfil: Analiza con muestra estándar del sistema
-    p_parallel_workers  => 4,                -- Concurrencia: Actualiza 4 tablas de forma simultánea
-    p_verbose           => FALSE,            -- Diagnóstico: Silencioso
+-- Ejecución recomendada: 1 vez al mes (Exclusivamente en Ventana de Mantenimiento)
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'ALL_USER',     -- Alcance: Tablas de usuario a evaluación estricta
+    p_profile             => 'SMART',        -- Perfil: Basado en histórico de telemetría sostenida
+    p_parallel_workers    => 1,              -- Máxima seguridad: 1 solo hilo (Bloqueo Total)
+    p_cutoff_time         => '06:00:00'::TIME, -- Límite estricto de finalización para liberar sistema
+    p_verbose             => FALSE,          -- Diagnóstico: Silencioso
     
-    -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para planificador fresco):
-    p_threshold_pct     => 5.00,             -- Actúa si el 5% de la tabla ha sufrido modificaciones
-    p_min_chg_rows      => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
-    p_force_chg_rows    => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
+    -- UMBRALES INTERMEDIO-CRÍTICO (Extremo/Agresivo para EVITAR el bloqueo innecesario):
+    p_bloat_pct_threshold => 45.00,          -- Exige que la tabla esté inflada al menos un 45%
+    p_bloat_mb_threshold  => 5120.00,        -- Exige que la tabla tenga al menos 5 GB recuperables
+    p_threshold_operator  => 'AND',           -- DEBE cumplir una de las dos condiciones para aplicar (Súper estricto)
+    p_sustained_days      => 5,             -- La anomalía debe persistir 10 días seguidos sin solución
+    p_min_table_mb        => 1024.00,        -- Solo evalúa tablas que pesan 1 GB o más
+    p_force_bloat_mb      => 20480.00,       -- Bypass de Rescate: Si la tabla tiene 20 GB de bloat, entra de golpe
+    p_enable_deep_scan    => FALSE,          -- Desactiva escaneo de bloque lento (Usa aproximación rápida)
     
-    p_cutoff_time       => '06:00:00'::TIME, -- Límite horario para no solapar procesos matutinos
-    p_keep_history      => TRUE              -- Auditoría: Conservar log de ejecuciones
+    p_keep_history        => TRUE            -- Auditoría: Registro obligatorio en maint.vacuum_full_tasks
 );
 
 ```
 
-### 3. 🌳 Módulo REINDEX (Desfragmentación B-Tree Cero-Bloqueo)
+
+### 4. 🌳 Módulo REINDEX (Desfragmentación B-Tree Cero-Bloqueo)
 
 Sanea índices zombis y reconstruye árboles B-Tree en caliente (`CONCURRENTLY`). Flexible pero controlado, dado que no bloquea pero genera un volumen alto de lectura/escritura en disco.
 
@@ -87,14 +117,14 @@ CALL maint.sp_orchestrate_reindex(
     p_scope               => 'ALL_USER',     -- Alcance: Todos los índices de usuario a evaluación
     p_profile             => 'CONCURRENT',   -- Perfil: Reconstrucción online Cero-Bloqueo
     p_parallel_workers    => 2,              -- Seguridad I/O: Limitado a 2 hilos para cuidar el disco
-    p_cutoff_time         => '04:00:00'::TIME, -- Freno de emergencia: Abortar si alcanza las 4 AM
+    p_cutoff_time         => '06:00:00'::TIME, -- Freno de emergencia: Abortar si alcanza las 4 AM
     p_verbose             => FALSE,          -- Diagnóstico: Silencioso
     
     -- UMBRALES INTERMEDIO-CRÍTICO (Flexible y Controlado):
     p_frag_pct_threshold  => 40.00,          -- Tolerancia de Fragmentación Foliar: Hasta 40%
     p_bloat_pct_threshold => 20.00,          -- Tolerancia de Bloat (Espacio Vacío): Hasta 20%
     p_bloat_mb_threshold  => 1024.00,        -- Tolerancia Absoluta: 1 GB (1024 MB) de basura en el índice
-    p_threshold_operator  => 'OR',           -- Condición: Si rompe CUALQUIERA de las 3 reglas, reindexa
+    p_threshold_operator  => 'OR',           -- Condición: Si rompe CUALQUIERA de las 2 reglas de p_bloat_pct_threshold o p_bloat_mb_threshold
     p_min_index_mb        => 10.00,          -- Descartar evaluación de índices menores a 10 MB
     p_force_frag_pct      => NULL,           -- Bypass directo de fragmentación (Desactivado)
     p_force_bloat_mb      => NULL,           -- Bypass directo de Bloat MB (Desactivado)
@@ -105,32 +135,7 @@ CALL maint.sp_orchestrate_reindex(
 
 ```
 
-### 4. 🏥 Módulo VACUUM FULL (Cirugía Mayor Físico-Forense)
 
-El único módulo que aplica bloqueos exclusivos (`AccessExclusiveLock`). Calibrado con umbrales extremadamente restrictivos para que **NUNCA** se ejecute a menos que la tabla represente una amenaza física y sostenida para el servidor.
-
-```sql
--- Ejecución recomendada: 1 vez al mes (Exclusivamente en Ventana de Mantenimiento)
-CALL maint.sp_orchestrate_vacuum_full(
-    p_scope               => 'ALL_USER',     -- Alcance: Tablas de usuario a evaluación estricta
-    p_profile             => 'SMART',        -- Perfil: Basado en histórico de telemetría sostenida
-    p_parallel_workers    => 1,              -- Máxima seguridad: 1 solo hilo (Bloqueo Total)
-    p_cutoff_time         => '05:00:00'::TIME, -- Límite estricto de finalización para liberar sistema
-    p_verbose             => FALSE,          -- Diagnóstico: Silencioso
-    
-    -- UMBRALES INTERMEDIO-CRÍTICO (Extremo/Agresivo para EVITAR el bloqueo innecesario):
-    p_bloat_pct_threshold => 50.00,          -- Exige que la tabla esté inflada al menos un 50%
-    p_bloat_mb_threshold  => 5120.00,        -- Exige que la tabla tenga al menos 5 GB recuperables
-    p_threshold_operator  => 'AND',          -- DEBE cumplir AMBAS condiciones para aplicar (Súper estricto)
-    p_sustained_days      => 10,             -- La anomalía debe persistir 10 días seguidos sin solución
-    p_min_table_mb        => 1024.00,        -- Solo evalúa tablas que pesan 1 GB o más
-    p_force_bloat_mb      => 20480.00,       -- Bypass de Rescate: Si la tabla tiene 20 GB de bloat, entra de golpe
-    p_enable_deep_scan    => FALSE,          -- Desactiva escaneo de bloque lento (Usa aproximación rápida)
-    
-    p_keep_history        => TRUE            -- Auditoría: Registro obligatorio en maint.vacuum_full_tasks
-);
-
-```
 
 ---
 
