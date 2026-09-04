@@ -1,4 +1,3 @@
-
 # 🛡️ pg-csql-analyze
 
 ## 🛠️ ¿PARA QUÉ SIRVE EL ORQUESTADOR ANALYZE?
@@ -41,13 +40,14 @@ VALUES ('public', 'historico_logs', 'ANALYZE', TRUE);
 INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
 VALUES ('public', 'usuarios', 'ANALYZE', TRUE);
 
+
 ```
 
 ---
 
 ## 🚦 ÁMBITOS DE COBERTURA (`p_scope`)
 
-Controla qué universo de tablas entra a la cola de evaluación. Los parámetros de control de volatilidad (`p_threshold_pct` y `p_min_chg_rows`) solo son respetados por los alcances inteligentes (`SMART`).
+Controla qué universo de tablas entra a la cola de evaluación. Los parámetros de control de volatilidad (`p_threshold_pct` y `p_min_mod_tuples`) solo son respetados por los alcances inteligentes (`SMART`).
 
 | Valor | Descripción | ¿Evalúa Umbrales (Volatilidad)? |
 | --- | --- | --- |
@@ -79,20 +79,10 @@ La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu con
 
 ```sql
 SELECT cron.schedule_in_database('vanguard_smart_analyze_daily', '0 2 * * *', 
-$$ 
-  CALL maint.sp_orchestrate_analyze(
-      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
-      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
-      p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1000,               -- INT     : Requisito de Mínima cantidad de cambiso de fila para hacer un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 50000,              -- INT     : Forza un analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
-      p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
-      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
-  );
-$$, 
+$$    CALL maint.sp_orchestrate_analyze(       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)       p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)       p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5\% de cambio)       p_min_mod_tuples   => 1000,               -- INT     : Requisito de Mínima cantidad de cambios de tupla para hacer un analyze (Filtro anti-morralla)        p_force_mod_tuples => 50000,              -- INT     : Fuerza un analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)       p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)   ); $$
+, 
 'mi_base_de_datos', 'postgres', true);
+
 
 ```
 
@@ -102,16 +92,10 @@ $$,
 
 ```sql
 SELECT * FROM public.pg_background_launch(
-    $$
-      CALL maint.sp_orchestrate_analyze(
-          p_scope            => 'CUSTOM_LIST', -- Lista VIP (maint.filters)
-          p_profile          => 'PRELOAD',     -- 3 fases progresivas
-          p_parallel_workers => 8,             -- Máxima fuerza bruta
-          p_keep_history     => TRUE           -- Retener auditoría forense
-      );
-    $$
+    $$       CALL maint.sp_orchestrate_analyze(           p_scope            => 'CUSTOM_LIST', -- Lista VIP (maint.filters)           p_profile          => 'PRELOAD',     -- 3 fases progresivas           p_parallel_workers => 8,             -- Máxima fuerza bruta           p_keep_history     => TRUE           -- Retener auditoría forense       );     $$
 );
 -- Devuelve un PID. Para monitorear: SELECT * FROM public.pg_background_result(TU_PID) AS (result TEXT);
+
 
 ```
 
@@ -141,13 +125,14 @@ SET default_statistics_target = 150;
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
-      p_verbose          => TRUE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
       p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_min_mod_tuples   => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
+
 
 ```
 
@@ -161,15 +146,14 @@ SET default_statistics_target = 150;
 | `p_profile` | `VARCHAR` | `'NORMAL'` | `'NORMAL'` para uso diario. `'PRELOAD'` para recuperación de emergencia en 3 fases estadísticas. |
 | `p_parallel_workers` | `INT` | `4` | Nivel de concurrencia. Número de tablas analizadas simultáneamente. |
 | `p_verbose` | `BOOLEAN` | `FALSE` | Modo Diagnóstico. Si es `TRUE`, imprime logs en tiempo real. Usar solo en consolas interactivas (DBeaver/pgAdmin). |
-| `p_threshold_pct` | `NUMERIC` | `5.0` | *(Aplica a SMART)* Porcentaje mínimo de filas modificadas respecto al total. |
-| `p_min_chg_rows` | `INT` | `1000` | *(Aplica a SMART)* Cantidad  mínima de modificaciones para considerar la tabla. |
+| `p_threshold_pct` | `NUMERIC` | `5.0` | *(Aplica a SMART)* Porcentaje mínimo de tuplas modificadas respecto al total. |
+| `p_min_mod_tuples` | `INT` | `1000` | *(Aplica a SMART)* Cantidad mínima de modificaciones para considerar la tabla. |
+| `p_force_mod_tuples` | `INT` | `50000` | *(Aplica a SMART)* Cantidad de tuplas modificadas para forzar el análisis omitiendo el porcentaje. |
 | `p_cutoff_time` | `TIME` | `NULL` | **Kill Switch.** Hora militar tope. Si se supera, aborta las tareas encoladas limpiamente. |
 | `p_keep_history` | `BOOLEAN` | `TRUE` | **Purga Efímera.** `TRUE` conserva el detalle del job en `analyze_tasks`. `FALSE` elimina los registros detallados al finalizar, previniendo el *bloat* del orquestador. (La tabla `jobs` nunca se borra). |
 
-
-
 ---
- 
+
 ### Estados `maint.jobs` y `maint.analyze_tasks`
 
 #### Para la Tabla Cabecera (`maint.jobs`):
@@ -188,13 +172,12 @@ SET default_statistics_target = 150;
 * **`FAILED`**: Error durante la ejecución del comando SQL sobre la tabla.
 * **`SKIPPED_TIME_LIMIT`**: Tarea omitida por alcanzar la hora límite.
 * **`ABORTED_ORPHAN`**: Tarea finalizada o abandonada en segundo plano tras la pérdida del recolector.
- 
 
 ---
-###  `p_force_chg_rows` para tablas gigantes
 
-El parámetro `p_force_chg_rows` (por defecto 50,000) se diseñó para resolver el **Efecto de Ceguera por Volumen en Tablas Masivas (Very Large Databases - VLDB)**.
+### `p_force_mod_tuples` para tablas gigantes
 
+El parámetro `p_force_mod_tuples` (por defecto 50,000) se diseñó para resolver el **Efecto de Ceguera por Volumen en Tablas Masivas (Very Large Databases - VLDB)**.
 
 #### Escenario A: Tablas Gigantes con Volatilidad Porcentual Invisible
 
@@ -204,21 +187,16 @@ El parámetro `p_force_chg_rows` (por defecto 50,000) se diseñó para resolver 
 
 $$\frac{4,000,000}{100,000,000} \times 100 = 4.00\%$$
 
-
 * Si tu parámetro `p_threshold_pct` está en `5.00` (5%), el orquestador **IGNORARÁ la tabla**, a pesar de que 4 millones de cambios destruyeron la precisión de los histogramas del optimizador (`pg_statistic`).
-* **La Solución con `p_force_chg_rows => 50000`:** Como $4,000,000 \ge 50,000$, la condición `p_force_chg_rows` se activa y **fuerza la entrada de la tabla al `ANALYZE**`, evitando que las consultas empiecen a hacer *Sequential Scans* destructivos al día siguiente.
+* **La Solución con `p_force_mod_tuples => 50000`:** Como $4,000,000 \ge 50,000$, la condición `p_force_mod_tuples` se activa y **fuerza la entrada de la tabla al `ANALYZE**`, evitando que las consultas empiecen a hacer *Sequential Scans* destructivos al día siguiente.
 
 #### Escenario B: Tablas de Crecimiento Constante (Append-Only Log / Historiales)
 
 * **Contexto:** Tablas de auditoría o *logs* que nunca sufren `UPDATE`, solo `INSERT` continuos a alta velocidad.
 * **El Problema:** Conforme la tabla crece a decenas de millones de filas, cada vez es matemáticamente más difícil que los nuevos registros alcancen el 5% de la masa total de la tabla. El optimizador de PostgreSQL perderá visibilidad de los nuevos rangos de IDs/fechas agregados recientemente (problema de *Data Drift* en llaves primarias crecientes).
-* **La Solución con `p_force_chg_rows`:** Garantiza que cada vez que se acumulen 50,000 nuevos registros en la cola (o el valor que configure el DBA), se dispare un refresco de estadísticas para que el planificador sepa que esos nuevos IDs existen.
-
+* **La Solución con `p_force_mod_tuples`:** Garantiza que cada vez que se acumulen 50,000 nuevos registros en la cola (o el valor que configure el DBA), se dispare un refresco de estadísticas para que el planificador sepa que esos nuevos IDs existen.
 
 ---
-
-
- 
 
 ## 🔄 Flujo de Vida cuando el Padre Muere y sus Diferentes Escenarios
 
@@ -234,28 +212,28 @@ Los procesos hijos continúan su ciclo de ejecución de forma independiente en e
                             [INICIO DE ORQUESTACIÓN]
                                        │
                                        ▼
-                       [Orquestador Padre (maint.jobs)]
+                        [Orquestador Padre (maint.jobs)]
                                        │
-                         Lanza trabajadores asíncronos
+                          Lanza trabajadores asíncronos
                                        │
-                     ┌─────────────────┴─────────────────┐
-                     ▼                                   ▼
-             [Worker Hijo 1]                     [Worker Hijo 2]
-             (pg_background)                     (pg_background)
-                     │                                   │
-                     └─────────────────┬─────────────────┘
+                      ┌────────────────┴────────────────┐
+                      ▼                                 ▼
+              [Worker Hijo 1]                   [Worker Hijo 2]
+              (pg_background)                   (pg_background)
+                      │                                 │
+                      └────────────────┬────────────────┘
                                        │
-                         ¿EL PADRE ES INTERRUMPIDO?
+                          ¿EL PADRE ES INTERRUMPIDO?
                                        │
-                     ┌─────────────────┴─────────────────┐
-                     │ SÍ                                │ NO
-                     ▼                                   ▼
-        [Sesión Cliente Muere]               [Proceso Normal]
-                     │                       • Padre recolecta resultados
-                     │                       • Cierre: status = 'COMPLETED'
-                     ▼
-         ¿ESTADO DE LOS HIJOS?
-                     │
+                      ┌────────────────┴────────────────┐
+                      │ SÍ                              │ NO
+                      ▼                                 ▼
+         [Sesión Cliente Muere]                [Proceso Normal]
+                      │                        • Padre recolecta resultados
+                      │                        • Cierre: status = 'COMPLETED'
+                      ▼
+          ¿ESTADO DE LOS HIJOS?
+                      │
     ┌────────────────┴────────────────┐
     │                                 │
     ▼                                 ▼
@@ -263,6 +241,7 @@ Los procesos hijos continúan su ciclo de ejecución de forma independiente en e
 • Hijos terminan ANALYZE en SO   • Tareas terminadas/abandonadas
 • maint.jobs queda en 'RUNNING'  • Próxima ejecución ejecuta Self-Healing
 • Base de Datos Queda OK         • Reconcilia a 'ABORTED_ORPHAN'
+
 
 ```
 
@@ -273,7 +252,9 @@ Los procesos hijos continúan su ciclo de ejecución de forma independiente en e
 | Escenario de Fallo | Estado de los Procesos Hijos (`pg_background`) | Estado del Job Padre (`maint.jobs`) | Estado de Tareas (`maint.analyze_tasks`) | Diagnóstico Forense y Acción del Sistema |
 | --- | --- | --- | --- | --- |
 | **Escenario 1: Interrupción Interactiva (`CTRL+C` / `SIGINT` en consola)** | **En Ejecución:** Los trabajadores siguen ejecutando activamente en segundo plano. | **`RUNNING`** | **`RUNNING`** | **Inmunidad Activa:** No se altera la tabla de control inmediatamente. Los hijos concluyen el mantenimiento en el motor. La base de datos queda optimizada a pesar de la pérdida del cliente. |
-| **Escenario 2: Cierre de Sesión / Caída de Red (Padre Muerto + Hijos Finalizados)** | **Finalizados:** Los trabajadores terminaron su `ANALYZE` en el motor y sus PIDs desaparecieron de `pg_stat_activity`. | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **Auto-Adopción y Self-Healing:** En la siguiente llamada del orquestador (bloque 1-B), se detecta la ausencia del Padre y los Hijos. Se adjudica el estado sin falsear el registro histórico. |
+| **Escenario 2: Cierre de Sesión / Caída de Red (Padre Muerto + Hijos Finalizados)** | **Finalizados:** Los trabajadores terminaron su `ANALYZE` en el motor y sus PIDs desaparecerion de `pg_stat_activity`. | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **`ABORTED_ORPHAN`** *(Sello en diferido)* | **Auto-Adopción y Self-Healing:** En la siguiente llamada del orquestador (bloque 1-B), se detecta la ausencia del Padre y los Hijos. Se adjudica el estado sin falsear el registro histórico. |
 | **Escenario 3: Cancelación Precoz (Fallo antes de despachar trabajadores)** | **Inexistentes:** No se alcanzó a instanciar ningún proceso vía `pg_background_launch`. | **`ABORTED_ORPHAN`** | **`FAILED_ORPHAN`** | **Limpieza de Cola:** Las tareas en cola `PENDING` se marcan con el log de auditoría *"Orchestrator process died unexpectedly"*. |
 | **Escenario 4: Matanza Forzada del Servidor (`kill -9` al PID del Padre)** | **Autónomos:** Finalizan su instrucción por su cuenta a nivel de proceso de PostgreSQL. | **`ABORTED_ORPHAN`** | **`ABORTED_ORPHAN`** | **Reconciliación Multidimensional:** El bloque 1-B audita las firmas de código de la sesión anterior en la siguiente ejecución y cierra el expediente sin bloquear nuevos despachos. |
+
+ 
  
