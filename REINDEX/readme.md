@@ -1,3 +1,4 @@
+ 
 # 🛡️ pg-csql-reindex
 
 **pg-csql-reindex** es un orquestador de mantenimiento asíncrono, predictivo y con validación físico-forense para bases de datos transaccionales masivas en PostgreSQL. Su objetivo es automatizar la reconstrucción de índices B-Tree, eliminar la fragmentación foliar, recuperar espacio en disco por *bloat* en índices y sanear automáticamente índices zombis/corruptos (`indisvalid = false`) sin intervención humana.
@@ -11,24 +12,26 @@
 
 El orquestador no opera a ciegas; está gobernado por 4 tablas maestras en el esquema `maint` que actúan como su memoria transaccional, panel de seguridad y bitácora forense:
 
+ 
+
 ```
-                      +-------------------+
-                      |    maint.jobs     |
-                      | (Cabecera Global) |
-                      +---------+---------+
-                                |
-                                | 1:N
-                                v
-                   +--------------------------+
-                   |   maint.reindex_tasks    |
-                   |   (Cola Transaccional)   |
-                   +------------+-------------+
-                                ^
-                                |
-      +-------------------------+-------------------------+
-      |                                                   |
+                  +-------------------+
+                  |    maint.jobs     |
+                  | (Cabecera Global) |
+                  +---------+---------+
+                            |
+                            | 1:N
+                            v
+               +--------------------------+
+               |   maint.reindex_tasks    |
+               |   (Cola Transaccional)   |
+               +------------+-------------+
+                            ^
+                            |
+  +-------------------------+-------------------------+
+  |                                                   |
 +-----+-------------------+                     +---------+---------+
-|  maint.pgstatindex      |                     |   maint.filters   |
+|   maint.pgstatindex     |                     |   maint.filters   |
 | (Telemetría B-Tree)     |                     | (Blacklist/White) |
 +-------------------------+                     +-------------------+
 
@@ -40,11 +43,11 @@ Cada vez que lanzas el orquestador, se crea un registro maestro aquí. Almacena 
 
 ### 2. `maint.reindex_tasks` (La Cola Transaccional)
 
-Es el campo de batalla de nivel de índice. Por cada `Job`, el motor inserta aquí todos los índices candidatos que superaron la evaluación del radar. Registra el milisegundo exacto en que inició y terminó la reconstrucción, la fragmentación foliar evaluada (`frag_pct_evaluado`), el porcentaje de bloat (`bloat_pct_evaluado`), el espacio en KB a recuperar (`bloat_kb_evaluado`), si el índice era zombi (`is_invalid`), el PID del worker asíncrono (`child_pid`), el historial de errores nativos (`error_log`) y las firmas de validación física (`old_relfilenode` vs `new_relfilenode`).
+Es el campo de batalla de nivel de índice. Por cada `Job`, el motor inserta aquí todos los índices candidatos que superaron la evaluación del radar. Registra el milisegundo exacto en que inició y terminó la reconstrucción, la fragmentación foliar evaluada (`frag_pct`), el porcentaje de bloat (`bloat_pct`), el espacio en KB a recuperar (`bloat_kb`), si el índice era zombi (`is_invalid`), el PID del worker asíncrono (`child_pid`), el historial de errores nativos (`error_log`) y las firmas de validación física (`old_relfilenode` vs `new_relfilenode`).
 
 ### 3. `maint.pgstatindex` (Telemetría Predictiva B-Tree)
 
-Es la bitácora diaria de escaneo estructural de la salud del árbol B-Tree. Almacena la evaluación realizada por el radar `sp_pgstatindex` sobre cada índice: tamaño en KB, porcentaje de fragmentación foliar (`leaf_fragmentation_pct`), densidad promedio de páginas (`avg_leaf_density_pct`), porcentaje de páginas vacías (`empty_pages_pct`), espacio de bloat estimado en KB y porcentaje (`total_bloat_pct`), indicador de invalidez (`is_invalid`) y la bandera de decisión (`requiere_reindex`).
+Es la bitácora diaria de escaneo estructural de la salud del árbol B-Tree. Almacena la evaluación realizada por el radar `sp_pgstatindex` sobre cada índice: tamaño en KB, porcentaje de fragmentación foliar (`leaf_fragmentation_pct`), densidad promedio de páginas (`avg_leaf_density_pct`), porcentaje de páginas vacías (`empty_pages_pct`), espacio de bloat estimado en KB y porcentaje (`total_bloat_pct`), indicador de invalidez (`is_invalid`) y la bandera de decisión (`requires_reindex`).
 
 ### 4. `maint.filters` (Panel de Granularidad y Excepciones)
 
@@ -62,6 +65,7 @@ ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET is_ignor
 INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
 VALUES ('public', 'facturas_vip', 'REINDEX', TRUE)
 ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET force_maintenance = EXCLUDED.force_maintenance;
+
 
 ```
 
@@ -106,25 +110,10 @@ La arquitectura es asíncrona y no bloqueante. Utiliza uno de los dos métodos r
 ```sql
 -- Programa la desfragmentación automática de índices diariamente a las 02:00 AM
 SELECT cron.schedule_in_database('vanguard_daily_reindex', '0 2 * * *', 
-$$ 
-  CALL maint.sp_orchestrate_reindex(
-      p_scope               => 'SMART_USER',    -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')
-      p_profile             => 'CONCURRENT',  -- Perfil ('CONCURRENT', 'FORCE_SURGERY')
-      p_parallel_workers    => 2,             -- Hilos asíncronos paralelos (Rango permitido: 1 a 4)
-      p_cutoff_time         => '06:00:00'::TIME, -- Hora límite / Kill-Switch (06:00 AM)
-      p_verbose             => FALSE,         -- Diagnóstico en consola
-      p_frag_pct_threshold  => 40.00,         -- Umbral de fragmentación foliar (>= 40%)
-      p_bloat_pct_threshold => 20.00,         -- Umbral de % de espacio libre de bloat (>= 20%)
-      p_bloat_mb_threshold  => 1024.00,       -- Umbral de bloat absoluto en MB (>= 1024 MB)
-      p_threshold_operator  => 'OR',          -- Compuerta lógica ('OR' / 'AND')
-      p_min_index_mb        => 10.00,         -- Filtro de tamaño mínimo de índice (10 MB)
-      p_force_frag_pct      => NULL,          -- Bypass por fragmentación extrema (NULL = Desactivado)
-      p_force_bloat_mb      => NULL,          -- Bypass por tamaño masivo en MB (NULL = Desactivado)
-      p_rebuild_invalid     => TRUE,          -- Reconstrucción prioritaria de índices zombis (indisvalid = false)
-      p_keep_history        => TRUE           -- Retención de bitácora en reindex_tasks
-  );
-$$, 
+$$    CALL maint.sp_orchestrate_reindex(       p_scope               => 'SMART_USER',    -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')       p_profile             => 'CONCURRENT',  -- Perfil ('CONCURRENT', 'FORCE_SURGERY')       p_parallel_workers    => 2,              -- Hilos asíncronos paralelos (Rango permitido: 1 a 4)       p_cutoff_time         => '06:00:00'::TIME, -- Hora límite / Kill-Switch (06:00 AM)       p_verbose             => FALSE,          -- Diagnóstico en consola       p_frag_pct_threshold  => 40.00,          -- Umbral de fragmentación foliar (>= 40\%)       p_bloat_pct_threshold => 20.00,          -- Umbral de \% de espacio libre de bloat (>= 20\%)       p_bloat_mb_threshold  => 1024.00,        -- Umbral de bloat absoluto en MB (>= 1024 MB)       p_threshold_operator  => 'OR',           -- Compuerta lógica ('OR' / 'AND')       p_min_index_mb        => 10.00,          -- Filtro de tamaño mínimo de índice (10 MB)       p_force_frag_pct      => NULL,           -- Bypass por fragmentación extrema (NULL = Desactivado)       p_force_bloat_mb      => NULL,           -- Bypass por tamaño masivo en MB (NULL = Desactivado)       p_rebuild_invalid     => TRUE,           -- Reconstrucción prioritaria de índices zombis (indisvalid = false)       p_keep_history        => TRUE            -- Retención de bitácora en reindex_tasks   ); $$
+, 
 'mi_base_de_datos', 'postgres', true);
+
 
 ```
 
@@ -137,28 +126,12 @@ $$,
 ```sql
 -- Lanza el orquestador en segundo plano y regresa el control inmediato de la consola al DBA
 SELECT * FROM public.pg_background_launch(
-    $$
-    CALL maint.sp_orchestrate_reindex(
-        p_scope               => 'SMART_USER',
-        p_profile             => 'CONCURRENT',
-        p_parallel_workers    => 2,
-        p_cutoff_time         => NULL,
-        p_verbose             => TRUE,
-        p_frag_pct_threshold  => 40.00,
-        p_bloat_pct_threshold => 20.00,
-        p_bloat_mb_threshold  => 1024.00,
-        p_threshold_operator  => 'OR',
-        p_min_index_mb        => 10.00,
-        p_force_frag_pct      => NULL,
-        p_force_bloat_mb      => NULL,
-        p_rebuild_invalid     => TRUE,
-        p_keep_history        => TRUE
-    );
-    $$
+    $$CALL maint.sp_orchestrate_reindex(         p_scope               => 'SMART_USER',         p_profile             => 'CONCURRENT',         p_parallel_workers    => 2,         p_cutoff_time         => NULL,         p_verbose             => TRUE,         p_frag_pct_threshold  => 40.00,         p_bloat_pct_threshold => 20.00,         p_bloat_mb_threshold  => 1024.00,         p_threshold_operator  => 'OR',         p_min_index_mb        => 10.00,         p_force_frag_pct      => NULL,         p_force_bloat_mb      => NULL,         p_rebuild_invalid     => TRUE,         p_keep_history        => TRUE     );$$
 );
 
 -- La llamada devolverá un PID de fondo (Ej. 1089201). Para revisar el log de salida al finalizar:
 -- SELECT * FROM public.pg_background_result(1089201) AS (result TEXT);
+
 
 ```
 
@@ -189,6 +162,7 @@ CALL maint.sp_orchestrate_reindex(
 );
 
 -- 3. Al concluir la orquestación, el motor resetea la configuración del ROL automáticamente.
+
 
 ```
 
@@ -242,12 +216,7 @@ CALL maint.sp_orchestrate_reindex(
 * **`SKIPPED_TIME_LIMIT`**: La tarea permanecía en estado `PENDING` cuando el orquestador activó el freno de emergencia por hora límite (`p_cutoff_time`).
 * **`ABORTED_ORPHAN`**: La tarea quedó congelada en estado `RUNNING` debido a la muerte del proceso Padre, y fue sellada por el procedimiento de *Self-Healing* en la siguiente ejecución.
 
-
-
-
-----
-
-
+---
 
 # monitorear y verificar si un `REINDEX` (o `REINDEX CONCURRENTLY`) se está ejecutando en tiempo real
 
@@ -280,6 +249,7 @@ SELECT
 FROM pg_stat_progress_create_index p
 JOIN pg_stat_activity a ON p.pid = a.pid;
 
+
 ```
 
 #### 💡 Fases Típicas que verás en la columna `fase_actual`:
@@ -311,6 +281,7 @@ WHERE a.query ILIKE '%REINDEX%'
   AND a.pid != pg_backend_pid()
 ORDER BY a.query_start ASC;
 
+
 ```
 
 ---
@@ -334,6 +305,7 @@ FROM maint.reindex_tasks t
 WHERE t.status = 'RUNNING'
 ORDER BY t.started_at ASC;
 
+
 ```
 
 ---
@@ -349,6 +321,5 @@ ps aux | grep -i "REINDEX"
 # O monitorear las lecturas/escrituras en disco en tiempo real
 iostat -xz 1
 
-```
 
- 
+```
