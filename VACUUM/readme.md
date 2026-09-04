@@ -1,11 +1,10 @@
 
-
 # 🛡️ pg-csql-vacuum
 
 **pg-csql-vacuum** es un orquestador de mantenimiento asíncrono y predictivo para bases de datos transaccionales masivas en PostgreSQL. Su objetivo es automatizar la limpieza de *bloat* (basura transaccional) y la actualización de estadísticas sin intervención humana.
 
 > ⚠️ **ACLARACIÓN CRÍTICA DE SEGURIDAD:**
-> Esta herramienta está diseñada **estrictamente para mantenimiento en caliente (Non-Blocking)** mediante `VACUUM` y `ANALYZE`. **NO SIRVE ni ejecuta `VACUUM FULL**`. Esta herramienta jamás aplicará un *AccessExclusiveLock* que detenga tu operación, garantizando que tu aplicación pueda seguir leyendo y escribiendo datos mientras la limpieza ocurre en segundo plano.
+> Esta herramienta está diseñada **estrictamente para mantenimiento en caliente (Non-Blocking)** mediante `VACUUM`   **NO SIRVE ni ejecuta `VACUUM FULL`**. Esta herramienta jamás aplicará un *AccessExclusiveLock* que detenga tu operación, garantizando que tu aplicación pueda seguir leyendo y escribiendo datos mientras la limpieza ocurre en segundo plano.
 
 ---
 
@@ -42,6 +41,7 @@ VALUES ('public', 'historico_logs', 'ALL', TRUE);
 INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
 VALUES ('public', 'usuarios', 'VACUUM', TRUE);
 
+
 ```
 
 ---
@@ -52,7 +52,7 @@ Cuando llamas al orquestador, debes definir su alcance y su agresividad.
 
 ### 🎯 Ámbitos de Cobertura (`p_scope`) y Dependencia de Umbrales
 
-Controla qué universo de tablas entra a la cola de evaluación. **Nota Táctica:** Los parámetros de control de basura (`p_threshold_pct` y `p_min_dead_tup`) solo son respetados por los alcances inteligentes (`SMART`).
+Controla qué universo de tablas entra a la cola de evaluación. **Nota Táctica:** Los parámetros de control de basura (`p_threshold_pct` y `p_min_dead_tuples`) solo son respetados por los alcances inteligentes (`SMART`).
 
 | Valor | Descripción | ¿Evalúa Umbrales de Basura? |
 | --- | --- | --- |
@@ -89,18 +89,19 @@ La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu con
 SELECT cron.schedule_in_database('vanguard_daily_vacuum', '0 2 * * *', 
 $$ 
   CALL maint.sp_orchestrate_vacuum(
-      p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-      p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+      p_scope           => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile         => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
       p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
-      p_cutoff_time    => '06:00:00'::TIME,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
-      p_verbose        => FALSE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
-      p_min_dead_rows  => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-      p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
-      p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+      p_cutoff_time     => '06:00:00'::TIME,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+      p_verbose         => FALSE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct   => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+      p_min_dead_tuples => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+      p_force_dead_tuples => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+      p_keep_history    => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
   );
 $$, 
 'mi_base_de_datos', 'postgres', true);
+
 
 ```
 
@@ -115,51 +116,27 @@ $$,
 SELECT * FROM public.pg_background_launch(
     $$
     CALL maint.sp_orchestrate_vacuum(
-        p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-        p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+        p_scope           => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+        p_profile         => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
         p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
-        p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
-        p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-        p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
-        p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-        p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
-        p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+        p_cutoff_time     => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+        p_verbose         => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+        p_threshold_pct   => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+        p_min_dead_tuples => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+        p_force_dead_tuples => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+        p_keep_history    => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
     );
     $$
 );
 
 -- Obtendrás un PID en pantalla (Ej. 104598). Para revisar el log final, ejecuta:
 -- SELECT * FROM public.pg_background_result(104598) AS (result TEXT);
+
 ```
 
-
- 
----
- 
-## 🎛️ Diccionario de Parámetros: `maint.sp_orchestrate_vacuum`
-
-Cuando ejecutes el procedimiento almacenado (ya sea vía cron o manual), puedes ajustar su comportamiento utilizando estos parámetros. El diseño del escuadrón garantiza que, si omites alguno, el orquestador usará valores seguros por defecto.
-
-| Parámetro | Tipo | Default | Descripción y Uso Operativo |
-| --- | --- | --- | --- |
-| `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Define qué universo de tablas será evaluado. Valores permitidos: `'SMART_USER'`, `'ALL_USER'`, `'CUSTOM_LIST'`, `'SMART_SYSTEM_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`. |
-| `p_profile` | `VARCHAR` | `'BALANCED'` | **Nivel de Agresividad.** Lee la tabla `maint.vacuum_profiles` para inyectar configuraciones sin riesgo de inyección SQL. Ejemplos integrados: `'LIGHT'`, `'BALANCED'`, `'AGGRESSIVE'`. |
-| `p_parallel_workers` | `INT` | `4` | **Nivel de Concurrencia.** Define cuántas tablas se limpiarán de forma simultánea. *Advertencia: Úsalo con precaución; valores muy altos en bases de datos con discos lentos generarán cuellos de botella de I/O (Saturación de I/O Wait).* |
-| `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Fija una hora límite militar (Ej. `'06:00:00'`). Si un proceso termina y el reloj del sistema supera esta hora, el orquestador abortará la cola pendiente y se apagará para no invadir el horario laboral diurno. Si es `NULL`, correrá hasta vaciar la cola. |
-| `p_verbose` | `BOOLEAN` | `FALSE` | **Modo Depuración.** Si se ajusta a `TRUE`, el procedimiento imprimirá mensajes (`INFO`, `WARNING`) en tiempo real sobre qué tabla está procesando, el PID asignado y los fallos encontrados. *Dejar en `FALSE` para automatizaciones en cron.* |
-| `p_threshold_pct` | `NUMERIC` | `5.00` | **Umbral Porcentual de Basura.** Solo aplica a *scopes* que inician con `'SMART_'`. Define el porcentaje mínimo de tuplas muertas que una tabla debe tener para entrar a la cola. (Ej. `5.00` = 5% de basura detectada). |
-| `p_min_dead_tup` | `INT` | `5000` | **Filtro de Tablas Minúsculas.** Evita desperdiciar ciclos de CPU evaluando tablas ínfimas. Una tabla debe tener al menos este número absoluto de tuplas muertas para ser considerada. *Nota: Si una tabla supera las 100,000 tuplas muertas, ignora el porcentaje e ingresa a la cola automáticamente como medida de protección extrema.* |
-
- 
-
-
-Aquí tienes el bloque exacto en Markdown listo para agregar a tu `README.md`.
-
-Te recomiendo colocarlo **justo después de la sección "🚀 Guía de Ejecución Rápida"** y antes del **"🎛️ Diccionario de Parámetros"**.
-
 ---
 
-### ⚡ Optimización Avanzada: Tuning de Sesión Dinámico (Fuerza Bruta)
+## ⚡ Optimización Avanzada: Tuning de Sesión Dinámico (Fuerza Bruta)
 
 Si necesitas acelerar una ejecución crítica, `pg-csql-vacuum` incluye un **Puente Dinámico Sesión-Rol**. Detecta automáticamente si alteraste parámetros en tu consola local mediante comandos `SET` y los transmite de forma segura a los *workers* en segundo plano, limpiando el catálogo del sistema al finalizar.
 
@@ -179,18 +156,19 @@ SET vacuum_cost_delay = 0;
 
 -- 2. Lanza el orquestador (Los background workers heredarán tus 2GB y 4 hilos automáticamente)
     CALL maint.sp_orchestrate_vacuum(
-        p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-        p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+        p_scope           => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+        p_profile         => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
         p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
-        p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
-        p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-        p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
-        p_min_dead_rows   => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-        p_force_dead_rows => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
-        p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+        p_cutoff_time     => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+        p_verbose         => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+        p_threshold_pct   => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+        p_min_dead_tuples => 100,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+        p_force_dead_tuples => 1000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+        p_keep_history    => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
     );
 
 -- 3. Al terminar la orquestación, el procedimiento resetea la configuración del ROL automáticamente en el catálogo.
+
 
 ```
 
@@ -199,14 +177,33 @@ SET vacuum_cost_delay = 0;
 > ⚠️ **ADVERTENCIA CRÍTICA DE RECURSOS (I/O & RAM):**
 > * **Saturación de Disco (`vacuum_cost_delay = 0`):** Ajustar el delay a `0` quita por completo el freno de disco. **Nunca uses este valor en horario laboral**, ya que consumirá todo el ancho de banda del almacenamiento e incrementará drásticamente los tiempos de respuesta de tu aplicación.
 > * **Riesgo de Colapso de Memoria (OOM Killer):** Recuerda que `maintenance_work_mem` se multiplica por la concurrencia. Si configuras `2GB` de RAM y ejecutas con `p_parallel_workers => 4`, el proceso usará hasta **8 GB de RAM real de golpe**. Si el servidor se queda sin memoria, el Kernel de Linux (OOM Killer) matará el proceso de PostgreSQL.
- 
+> 
+> 
+
 💡 **Recomendación:** Usa el tuning de sesión dinámico **únicamente en ventanas de mantenimiento nocturnas o fines de semana**. Para la rutina diaria automática vía `pg_cron`, no ejecutes ningún `SET` previo; deja que el orquestador opere con los valores por defecto (`reset_val`) del servidor para no impactar la operación.
 
 ---
 
-### 📊 MATRIZ DE ESTADOS PARA EL MÓDULO `VACUUM`
+## 🎛️ Diccionario de Parámetros: `maint.sp_orchestrate_vacuum`
 
-#### 1. Para la Tabla Cabecera Maestra (`maint.jobs`):
+Cuando ejecutes el procedimiento almacenado (ya sea vía cron o manual), puedes ajustar su comportamiento utilizando estos parámetros. El diseño del escuadrón garantiza que, si omites alguno, el orquestador usará valores seguros por defecto.
+
+| Parámetro | Tipo | Default | Descripción y Uso Operativo |
+| --- | --- | --- | --- |
+| `p_scope` | `VARCHAR` | `'SMART_USER'` | **Ámbito de Cobertura.** Define qué universo de tablas será evaluado. Valores permitidos: `'SMART_USER'`, `'ALL_USER'`, `'CUSTOM_LIST'`, `'SMART_SYSTEM_USER'`, `'ALL_SYSTEM_USER'`, `'ALL_SYSTEM'`. |
+| `p_profile` | `VARCHAR` | `'BALANCED'` | **Nivel de Agresividad.** Lee la tabla `maint.vacuum_profiles` para inyectar configuraciones sin riesgo de inyección SQL. Ejemplos integrados: `'LIGHT'`, `'BALANCED'`, `'AGGRESSIVE'`. |
+| `p_parallel_workers` | `INT` | `4` | **Nivel de Concurrencia.** Define cuántas tablas se limpiarán de forma simultánea. *Advertencia: Úsalo con precaución; valores muy altos en bases de datos con discos lentos generarán cuellos de botella de I/O (Saturación de I/O Wait).* |
+| `p_cutoff_time` | `TIME` | `NULL` | **Freno de Emergencia (Kill Switch).** Fija una hora límite militar (Ej. `'06:00:00'`). Si un proceso termina y el reloj del sistema supera esta hora, el orquestador abortará la cola pendiente y se apagará para no invadir el horario laboral diurno. Si es `NULL`, correrá hasta vaciar la cola. |
+| `p_verbose` | `BOOLEAN` | `FALSE` | **Modo Depuración.** Si se ajusta a `TRUE`, el procedimiento imprimirá mensajes (`INFO`, `WARNING`) en tiempo real sobre qué tabla está procesando, el PID asignado y los fallos encontrados. *Dejar en `FALSE` para automatizaciones en cron.* |
+| `p_threshold_pct` | `NUMERIC` | `5.00` | **Umbral Porcentual de Basura.** Solo aplica a *scopes* que inician con `'SMART_'`. Define el porcentaje mínimo de tuplas muertas que una tabla debe tener para entrar a la cola. (Ej. `5.00` = 5% de basura detectada). |
+| `p_min_dead_tuples` | `INT` | `5000` | **Filtro de Tablas Minúsculas.** Evita desperdiciar ciclos de CPU evaluando tablas ínfimas. Una tabla debe tener al menos este número absoluto de tuplas muertas para ser considerada. |
+| `p_force_dead_tuples` | `INT` | `100000` | **Freno de Basura Extrema.** Si una tabla supera este número absoluto de tuplas muertas, ignora el porcentaje e ingresa a la cola automáticamente como medida de protección extrema. |
+
+---
+
+## 📊 MATRIZ DE ESTADOS PARA EL MÓDULO `VACUUM`
+
+### 1. Para la Tabla Cabecera Maestra (`maint.jobs`):
 
 * **`RUNNING`**: El orquestador principal (el Job Padre) está actualmente en ejecución activa despachando o monitoreando trabajadores de `VACUUM`.
 * **`COMPLETED`**: El orquestador terminó todo el ciclo de trabajo de manera óptima, ya sea porque procesó todas las tareas exitosamente o porque no hubo tablas candidatas en el sistema (Sistema óptimo).
@@ -214,8 +211,7 @@ SET vacuum_cost_delay = 0;
 * **`ABORTED_ORPHAN`**: El Job Padre sufrió una muerte súbita (ej. Caída de red del cliente, Servidor reiniciado, `SIGKILL -9`). El orquestador detectó la ausencia del PID en la siguiente ejecución y selló el Job de forma forense.
 * **`CANCELLED_BY_USER`**: Interrupción manual controlada (ej. `CTRL+C` atrapado limpiamente). *(Nota: En `VACUUM` este estado es menos frecuente debido a que la interrupción suele generar el estado Huérfano si el Padre muere de golpe, pero el catálogo lo soporta por homologación con la suite global).*
 
- 
-#### 2. Para la Cola de Tareas Hijas (`maint.vacuum_tasks`):
+### 2. Para la Cola de Tareas Hijas (`maint.vacuum_tasks`):
 
 * **`PENDING`**: La tabla candidata superó los filtros matemáticos (o fue forzada por `maint.filters`) y está en la cola, esperando que un worker se libere.
 * **`RUNNING`**: La tabla está siendo intervenida en este milisegundo por un worker asíncrono (`pg_background`). El campo `child_pid` contiene la firma del trabajador activo.
@@ -223,5 +219,3 @@ SET vacuum_cost_delay = 0;
 * **`FAILED`**: La ejecución del comando `VACUUM` sobre esa tabla en particular falló (por ejemplo, permisos insuficientes, objeto eliminado en caliente, etc.). El error nativo queda grabado inmutablemente en la columna `error_log`.
 * **`SKIPPED_TIME_LIMIT`**: La tarea estaba en `PENDING` cuando el orquestador activó el freno de emergencia por tiempo (`p_cutoff_time`). La tarea no se ejecutó.
 * **`ABORTED_ORPHAN`**: La tarea quedó congelada en `RUNNING` cuando el proceso Padre murió, y fue reconciliada (sellada) por el bloque de auto-sanación en la siguiente ejecución del orquestador.
-
- 
