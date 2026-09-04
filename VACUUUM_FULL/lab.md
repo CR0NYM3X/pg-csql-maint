@@ -1,4 +1,4 @@
- 
+
 ### 🪖 FASE 1: WAR GAMES (GENERACIÓN DE DEGRADACIÓN FÍSICA Y ESPACIO EN DISCO)
 
 Ejecuta este bloque inicial para limpiar el esquema `lab`, desactivar `autovacuum` y generar diversos tipos de fragmentación física (tuplas muertas + espacio libre en páginas de disco).
@@ -80,6 +80,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 ('lab', 'demo_escudo_historial', TRUE,  FALSE, 'VACUUM_FULL'), -- [ESCUDO ACTIVO]: Intocable.
 ('lab', 'demo_vip_facturas',     FALSE, TRUE,  'VACUUM_FULL'); -- [PASE VIP]: Mantenimiento prioritario.
 
+
 ```
 
 ---
@@ -92,6 +93,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 SELECT filter_id, schema_name, table_name, maintenance_action, is_ignored, force_maintenance 
 FROM maint.filters 
 WHERE schema_name = 'lab';
+
 ```
 
 **Salida Esperada:**
@@ -101,6 +103,7 @@ WHERE schema_name = 'lab';
 -----------+-------------+-----------------------+--------------------+------------+-------------------
          1 | lab         | demo_escudo_historial | VACUUM_FULL        | t          | f
          2 | lab         | demo_vip_facturas     | VACUUM_FULL        | f          | t
+
 
 ```
 
@@ -137,6 +140,7 @@ WHERE n.nspname = 'lab'
   AND c.relname in('demo_extreme_bloat','demo_heavy_updates','demo_vip_facturas','demo_escudo_historial')
 ORDER BY pg_relation_size(c.oid) DESC;
 
+
 ```
 
 **Salida Esperada:**
@@ -149,10 +153,12 @@ ORDER BY pg_relation_size(c.oid) DESC;
  lab         | demo_escudo_historial |   1804986 |         1804986 | 4712 kB    | f
  lab         | demo_vip_facturas     |   1804977 |         1804977 | 2552 kB    | f
 (4 rows)
+
 ```
 
-### Revisar las estadisticas de manrea manual.  
-```
+### Revisar las estadisticas de manrea manual.
+
+```sql
 SELECT 
     n.nspname AS schema_name,
     c.relname AS table_name,
@@ -180,20 +186,21 @@ WHERE n.nspname = 'lab'
       'demo_escudo_historial'
   )
 ORDER BY total_bloat_pct DESC;
+
 ```
 
 **Salida esperada**
-```
+
+```text
  schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
 -------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
- lab         | demo_extreme_bloat    |   260.42 |  260.42 |        0.00 |       29981 |   26.14 |    10.04 |           0 |    0.00 |     0.00 |  234.28 |    89.96 |           89.96
- lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |           49.87
- lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |           49.81
- lab         | demo_vip_facturas     |     2.49 |    2.49 |        0.00 |       40000 |    1.99 |    79.96 |           0 |    0.00 |     0.00 |    0.50 |    20.04 |           20.04
+ lab         | demo_extreme_bloat    |   260.42 |  260.42 |        0.00 |       29981 |   26.14 |    10.04 |           0 |    0.00 |     0.00 |  234.28 |    89.96 |            89.96
+ lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |            49.87
+ lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |            49.81
+ lab         | demo_vip_facturas     |     2.49 |    2.49 |        0.00 |       40000 |    1.99 |    79.96 |           0 |    0.00 |     0.00 |    0.50 |    20.04 |            20.04
 (4 rows)
+
 ```
-
-
 
 ---
 
@@ -211,25 +218,31 @@ CALL maint.sp_pgstattuple(
     p_bloat_pct_threshold => 50.00,
     p_bloat_mb_threshold  => 50.00,        -- Umbral regular (50 MB)
     p_threshold_operator => 'OR',         -- Compuerta entre % y MB ('OR' / 'AND')
-    p_min_table_mb        => 0.00,         -- Evalúa desde 0 MB en adelante
-    p_force_bloat_mb      => NULL,         -- [NUEVO]: Bypass de emergencia (NULL = Desactivado, o p. ej. 500.00 MB)
+    p_min_table_mb        => 0.00,          -- Evalúa desde 0 MB en adelante
+    p_force_bloat_mb      => NULL,          -- [NUEVO]: Bypass de emergencia (NULL = Desactivado, o p. ej. 500.00 MB)
     p_enable_deep_scan    => FALSE,        -- Escaneo bloque a bloque (FALSE = Aprox rápido)
     p_verbose             => TRUE          -- Diagnóstico visual en consola
 );
 
+
 ```
+
 **Salida esperada**
-```
+
+```text
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 5
 CALL
+
 ```
 
 ### Revisar las si guardo los datos correctos
-si observamos aunque este aplicado el filtro de la tabla demo_escudo_historial aun asi se involuctra en el escaneo, aqui el orquestador es inteligente para ya no ejecutarlo. 
-```
+
+si observamos aunque este aplicado el filtro de la tabla demo_escudo_historial aun asi se involuctra en el escaneo, aqui el orquestador es inteligente para ya no ejecutarlo.
+
+```sql
 select * from maint.pgstattuple where table_name 
  IN (
       'demo_extreme_bloat',
@@ -237,9 +250,12 @@ select * from maint.pgstattuple where table_name
       'demo_vip_facturas',
       'demo_escudo_historial'
   );
+
 ```
+
 **Salida esperada**
-```
+
+```text
 -[ RECORD 1 ]-------------+------------------------------
 triage_id                 | 229
 evaluation_date           | 2026-08-26
@@ -270,7 +286,7 @@ deep_free_space           |
 deep_free_percent         | 
 total_bloat_kb            | 239901.19
 total_bloat_pct           | 89.96
-requiere_vf               | t
+requires_vf               | t
 -[ RECORD 2 ]-------------+------------------------------
 triage_id                 | 239
 evaluation_date           | 2026-08-26
@@ -301,7 +317,7 @@ deep_free_space           |
 deep_free_percent         | 
 total_bloat_kb            | 7614.53
 total_bloat_pct           | 49.81
-requiere_vf               | t
+requires_vf               | t
 -[ RECORD 3 ]-------------+------------------------------
 triage_id                 | 264
 evaluation_date           | 2026-08-26
@@ -332,7 +348,7 @@ deep_free_space           |
 deep_free_percent         | 
 total_bloat_kb            | 511.34
 total_bloat_pct           | 20.04
-requiere_vf               | t
+requires_vf               | t
 -[ RECORD 4 ]-------------+------------------------------
 triage_id                 | 269
 evaluation_date           | 2026-08-26
@@ -363,10 +379,9 @@ deep_free_space           |
 deep_free_percent         | 
 total_bloat_kb            | 2349.72
 total_bloat_pct           | 49.87
-requiere_vf               | t
-```  
+requires_vf               | t
 
-
+```
 
 #### Inyección Manual de Histórico (Simulación de 5 Días de Degradación)
 
@@ -375,30 +390,33 @@ Para probar la condición de `p_sustained_days => 5` sin esperar 5 días reales,
 ```sql
 INSERT INTO maint.pgstattuple (
     evaluation_date, schema_name, table_name, approx_scanned, 
-    total_bloat_kb, total_bloat_pct, requiere_vf
+    total_bloat_kb, total_bloat_pct, requires_vf
 )
 SELECT 
     CURRENT_DATE - i, schema_name, table_name, approx_scanned, 
-    total_bloat_kb, total_bloat_pct, requiere_vf
+    total_bloat_kb, total_bloat_pct, requires_vf
 FROM maint.pgstattuple, generate_series(1, 4) i
 WHERE evaluation_date = CURRENT_DATE
 ON CONFLICT (evaluation_date, schema_name, table_name) DO NOTHING;
+
 
 ```
 
 #### Consulta de Confirmación del Radar:
 
 ```sql
-SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requires_vf 
 FROM maint.pgstattuple 
 WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
 table_name IN ('demo_extreme_bloat','demo_heavy_updates', 'demo_vip_facturas', 'demo_escudo_historial' )
 ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+
 ```
 
 **Salida esperada**
-```
- evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+
+```text
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
 -----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
  2026-08-22      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
  2026-08-23      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
@@ -421,6 +439,7 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
  2026-08-25      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
  2026-08-26      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
 (20 rows)
+
 ```
 
 ---
@@ -449,6 +468,7 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_enable_deep_scan    => FALSE,
     p_keep_history        => TRUE
 );
+
 ```
 
 **Salida Esperada:**
@@ -458,7 +478,7 @@ INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetr�
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 5
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
@@ -470,6 +490,7 @@ INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 3 | Procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:02.029293
 INFO:  =========================================================
 CALL
+
 
 ```
 
@@ -499,6 +520,7 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_keep_history        => TRUE
 );
 
+
 ```
 
 **Salida Esperada:**
@@ -515,6 +537,7 @@ INFO:  ---------------------------------------------------------
 INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 2 | Procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:01.321045
 INFO:  =========================================================
+
 
 ```
 
@@ -542,10 +565,12 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_keep_history        => TRUE
 );
 
+
 ```
 
 **Salida esperada**
-```
+
+```text
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: CUSTOM_LIST | MODO: FORCE_SURGERY | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
@@ -558,7 +583,9 @@ INFO:  Tiempo Total: 00:00:02.013515
 INFO:  =========================================================
 CALL
 
+
 ```
+
 ---
 
 ### 📊 ESCENARIO 5: AUDITORÍA FORENSE Y VERIFICACIÓN DE INODOS (`relfilenode`)
@@ -573,8 +600,8 @@ SELECT
     job_id,
     schema_name,
     table_name,
-    bloat_pct_evaluado,
-    bloat_kb_evaluado,
+    bloat_pct AS bloat_pct_evaluado,
+    bloat_kb AS bloat_kb_evaluado,
     old_relfilenode AS "Nodo Físico ANTES",
     new_relfilenode AS "Nodo Físico DESPUÉS",
     CASE 
@@ -587,20 +614,23 @@ SELECT
 FROM maint.vacuum_full_tasks
 ORDER BY task_id ASC;
 
+
 ```
 
 **Salida Esperada:**
 
 ```text
- task_id | job_id | schema_name |     table_name     | bloat_pct_evaluado | bloat_kb_evaluado | Nodo Físico ANTES | Nodo Físico DESPUÉS |   verificacion_fisica    | status  | child_pid |    duracion     
----------+--------+-------------+--------------------+--------------------+-------------------+-------------------+---------------------+--------------------------+---------+-----------+-----------------
+ task_id | job_id | schema_name |     table_name     | bloat_pct_evaluado | bloat_kb_evaluado | Nodo Físico ANTES | Nodo Físico DESPUÉS |    verificacion_fisica    | status  | child_pid |    duracion     
+---------+--------+-------------+--------------------+--------------------+-------------------+-------------------+---------------------+---------------------------+---------+-----------+-----------------
        4 |      3 | lab         | demo_extreme_bloat |              89.96 |         239901.19 |           1807252 |             1807342 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1010119 | 00:00:02.006412
        5 |      4 | lab         | demo_vip_facturas  |              20.04 |            511.34 |           1807270 |             1807354 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1010379 | 00:00:02.00614
 
+
 ```
 
-### Revisar las estadisticas de manrea manual.  
-```
+### Revisar las estadisticas de manrea manual.
+
+```sql
 SELECT 
     n.nspname AS schema_name,
     c.relname AS table_name,
@@ -628,28 +658,26 @@ WHERE n.nspname = 'lab'
       'demo_escudo_historial'
   )
 ORDER BY total_bloat_pct DESC;
+
 ```
 
 **Salida esperada**
-```
+
+```text
  schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
 -------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
- lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |           49.87
- lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |           49.81
- lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
- lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
+ lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |            49.87
+ lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |            49.81
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |             6.07
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |             0.09
 (4 rows)
+
 ```
 
+---
 
+### 📍 ESCENARIO  : Forzaremos todo lo que pese igual o mas de 7MB se le realizara vacuum full
 
-----
-
-
-
-
-### 📍 ESCENARIO  : Forzaremos todo lo que pese igual o mas de 7MB se le realizara vacuum full 
- 
 ```sql
 
 CALL maint.sp_orchestrate_vacuum_full(
@@ -673,12 +701,13 @@ CALL maint.sp_orchestrate_vacuum_full(
 ```
 
 **Salida esperada**
-```
+
+```text
 INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 5120.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 7
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 7
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
@@ -690,14 +719,17 @@ INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 6 | Procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:02.027926
 INFO:  =========================================================
 CALL
+
 ```
 
 ### Validar proceso hijo
-```
+
+```sql
 select * from maint.vacuum_full_tasks where job_id = 6; 
-```
 
 ```
+
+```text
 -[ RECORD 1 ]------+------------------------------
 task_id            | 6
 job_id             | 6
@@ -712,28 +744,33 @@ status             | SUCCESS
 child_pid          | 1012152
 started_at         | 2026-08-26 10:00:37.548252+00
 ended_at           | 2026-08-26 10:00:39.555145+00
-error_log    
+error_log          | 
+
 ```
 
 ---
+
 ---
 
 # Escenario: simulación de interrupción de proesos.
 
-```
+```sql
 update maint.jobs set status = 'RUNNING' where job_id = 6;
 update maint.vacuum_full_tasks  set status = 'RUNNING' where job_id = 6;
+
 ```
 
 ### Validar
 
-```
+```sql
 select * from maint.jobs where job_id = 6;
 select * from maint.vacuum_full_tasks where job_id = 6;
+
 ```
 
 **Salida**
-```
+
+```text
 -[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 job_id             | 6
 job_type           | SMART_USER_SMART_SURGERY
@@ -761,10 +798,12 @@ child_pid          | 1012152
 started_at         | 2026-08-26 10:00:37.548252+00
 ended_at           | 2026-08-26 10:00:39.555145+00
 error_log          | 
+
 ```
 
 ### Ejecutar orquestador
-```
+
+```sql
 CALL maint.sp_orchestrate_vacuum_full(
     p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
@@ -781,36 +820,39 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_enable_deep_scan    => FALSE,
     p_keep_history        => TRUE
 );
+
 ```
 
 **Salida**
-```
+
+```text
 NOTICE:  [SELF-HEALING] Job 6 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
 NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
 INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 5120.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 6
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 6
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:  [✓] ORQUESTACION FINALIZADA. Job 7 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
 CALL
+
 ```
-
-
 
 ### Validar
 
-```
+```sql
 select * from maint.jobs where job_id = 6;
 select * from maint.vacuum_full_tasks where job_id = 6;
+
 ```
 
 **Salida**
-```
+
+```text
 -[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 job_id             | 6
 job_type           | SMART_USER_SMART_SURGERY
@@ -839,15 +881,16 @@ started_at         | 2026-08-26 10:00:37.548252+00
 ended_at           | 2026-08-26 10:20:56.691702+00
 error_log          | Orchestrator process died or was superseded.
 
+
 ```
 
 ---
 
+# Pruebas de historial
 
-# Pruebas de historial 
+### Revisar las estadisticas de manrea manual.
 
-### Revisar las estadisticas de manrea manual.  
-```
+```sql
 SELECT 
     n.nspname AS schema_name,
     c.relname AS table_name,
@@ -875,50 +918,58 @@ WHERE n.nspname = 'lab'
       'demo_escudo_historial'
   )
 ORDER BY total_bloat_pct DESC;
+
 ```
 
 **Salida esperada**
-```
+
+```text
  schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
 -------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
- lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |           49.87
- lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
- lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
- lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |            0.06
+ lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |            49.87
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |             6.07
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |             0.09
+ lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |             0.06
 (4 rows)
-```
 
+```
 
 #### validamos unicamente demo_extreme_bloat
 
 ```sql
-SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requires_vf 
 FROM maint.pgstattuple 
 WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
 table_name IN ('demo_escudo_historial' )
 ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+
 ```
 
 **Salida esperada**
-```
- evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+
+```text
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
 -----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
  2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
  2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
  2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
  2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
 (4 rows)
+
 ```
 
+### Borramos el filtro
 
-### Borramos el filtro 
-```
+```sql
 delete  from maint.filters  where table_name = 'demo_escudo_historial';
+
 ```
 
-### Ejecutamos el mantenimiento 
-No seberia encontrar esto debido a que los ultimos 5 días solo el 
-```
+### Ejecutamos el mantenimiento
+
+No seberia encontrar esto debido a que los ultimos 5 días solo el
+
+```sql
 CALL maint.sp_orchestrate_vacuum_full(
     p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
@@ -935,35 +986,43 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_enable_deep_scan    => FALSE,
     p_keep_history        => TRUE
 );
+
 ```
 
 **Salida esperada**
-```
+
+```text
 INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 2048.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 4
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 4
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
 INFO:  =========================================================
 INFO:  [✓] ORQUESTACION FINALIZADA. Job 11 | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)
 CALL
+
 ```
 
 ### Validamos las metricas
-el escaneo de hoy lo colocomo como requiere_vf
-```
-SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+
+el escaneo de hoy lo colocomo como requires_vf
+
+```sql
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requires_vf 
 FROM maint.pgstattuple 
 WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
 table_name IN ('demo_escudo_historial' )
 ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+
 ```
+
 **Salida esperada**
-```
- evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+
+```text
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
 -----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
  2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
  2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
@@ -971,35 +1030,39 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
  2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
  2026-08-26      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
 (5 rows)
+
 ```
 
+### Manipulamos el historial para que le haga el mantenimiento y consultamos las metricas
 
-### Manipulamos el historial para que le haga el mantenimiento y consultamos las metricas 
-```
-update  maint.pgstattuple set requiere_vf = true  where evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and table_name IN ('demo_escudo_historial' )
-SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requiere_vf 
+```sql
+update  maint.pgstattuple set requires_vf = true  where evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and table_name IN ('demo_escudo_historial' );
+SELECT evaluation_date, schema_name, table_name, total_bloat_kb, (total_bloat_kb / 1024)::numeric(14,2) as total_bloat_mb, total_bloat_pct, requires_vf 
 FROM maint.pgstattuple 
 WHERE schema_name = 'lab' AND evaluation_date between CURRENT_DATE -5 and CURRENT_DATE and
 table_name IN ('demo_escudo_historial' )
 ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
+
 ```
 
 **Salida esperada**
-```
- evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requiere_vf 
+
+```text
+ evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
 -----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
  2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
  2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
  2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
  2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
  2026-08-26      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | t
+
 ```
 
+### Ejecutamos el mantenimiento
 
+No seberia encontrar esto debido a que los ultimos 5 días solo el
 
-### Ejecutamos el mantenimiento 
-No seberia encontrar esto debido a que los ultimos 5 días solo el 
-```
+```sql
 CALL maint.sp_orchestrate_vacuum_full(
     p_scope               => 'SMART_USER',
     p_profile             => 'SMART',
@@ -1016,15 +1079,17 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_enable_deep_scan    => FALSE,
     p_keep_history        => TRUE
 );
+
 ```
 
 **Salida esperada**
-```
+
+```text
 INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 2048.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requiere VF: 5
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 5
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
 INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: 7
@@ -1036,10 +1101,12 @@ INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 13 | Procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:02.031741
 INFO:  =========================================================
 CALL
+
 ```
 
-### Revisar las estadisticas de manrea manual.  
-```
+### Revisar las estadisticas de manrea manual.
+
+```sql
 SELECT 
     n.nspname AS schema_name,
     c.relname AS table_name,
@@ -1067,33 +1134,24 @@ WHERE n.nspname = 'lab'
       'demo_escudo_historial'
   )
 ORDER BY total_bloat_pct DESC;
+
 ```
 
 **Salida esperada**
-Aqui como vemos la tabla demo_escudo_historial ya se hizo vacuum full con exito 
-```
+Aqui como vemos la tabla demo_escudo_historial ya se hizo vacuum full con exito
+
+```text
  schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
 -------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
- lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |            6.07
- lab         | demo_escudo_historial |     2.30 |    2.30 |      100.00 |       40001 |    1.98 |    86.07 |           0 |    0.00 |     0.00 |    0.01 |     0.34 |            0.34
- lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |            0.09
- lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |            0.06
+ lab         | demo_extreme_bloat    |    26.05 |   26.05 |      100.00 |       30000 |   24.09 |    92.49 |           0 |    0.00 |     0.00 |    1.58 |     6.07 |             6.07
+ lab         | demo_escudo_historial |     2.30 |    2.30 |      100.00 |       40001 |    1.98 |    86.07 |           0 |    0.00 |     0.00 |    0.01 |     0.34 |             0.34
+ lab         | demo_vip_facturas     |     1.99 |    1.99 |      100.00 |       40000 |    1.72 |    86.17 |           0 |    0.00 |     0.00 |    0.00 |     0.09 |             0.09
+ lab         | demo_heavy_updates    |     7.47 |    7.47 |      100.00 |      150000 |    6.87 |    91.94 |           0 |    0.00 |     0.00 |    0.00 |     0.06 |             0.06
 (4 rows)
+
 ```
 
-----
-
-
-
-
-
-
-
-
-
-
-
-
+---
 
 #### Consulta C: Bitácora Maestra de Jobs (`maint.jobs`)
 
