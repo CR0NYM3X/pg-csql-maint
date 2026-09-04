@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS maint.pgstattuple (
     
     total_bloat_kb NUMERIC(14,2) NOT NULL DEFAULT 0.00,
     total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
-    requiere_vf BOOLEAN NOT NULL DEFAULT FALSE, 
+    requires_vf BOOLEAN NOT NULL DEFAULT FALSE, 
 
     CONSTRAINT uq_triage_date_schema_table UNIQUE (evaluation_date, schema_name, table_name)
 );
@@ -118,8 +118,8 @@ CREATE TABLE IF NOT EXISTS maint.vacuum_full_tasks (
     job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE,
     schema_name VARCHAR(255) NOT NULL,
     table_name VARCHAR(255) NOT NULL,
-    bloat_pct_evaluado NUMERIC(12,2) NOT NULL,
-    bloat_kb_evaluado NUMERIC(14,2) NOT NULL,
+    bloat_pct NUMERIC(12,2) NOT NULL,
+    bloat_kb NUMERIC(14,2) NOT NULL,
     sustained_days_met INT NOT NULL, 
     old_relfilenode BIGINT,               -- Checksum Físico: Inodo de archivo ANTES de la cirugía
     new_relfilenode BIGINT,               -- Checksum Físico: Inodo de archivo DESPUÉS de la cirugía
@@ -163,19 +163,19 @@ DECLARE
     r_table RECORD; r_approx RECORD; r_deep RECORD;
     v_today DATE := current_date; 
     v_processed INT := 0; v_sniped INT := 0;
-    v_requiere_vf_count INT := 0;
+    v_requires_vf_count INT := 0;
     v_total_bloat_pct NUMERIC(12,2); 
     v_total_bloat_kb NUMERIC(14,2);
     v_threshold_kb NUMERIC(14,2) := (p_bloat_mb_threshold * 1024.0);
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
-    v_requiere_vf BOOLEAN := FALSE;
+    v_requires_vf BOOLEAN := FALSE;
     v_op_upper VARCHAR := UPPER(p_threshold_operator);
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
     IF v_op_upper NOT IN ('AND', 'OR') THEN
-        RAISE EXCEPTION 'CRÍTICO: El parámetro p_threshold_operator solo admite ''AND'' u ''OR''. Valor recibido: %', p_threshold_operator;
+        RAISE EXCEPTION 'CRITICAL: El parámetro p_threshold_operator solo admite ''AND'' u ''OR''. Valor recibido: %', p_threshold_operator;
     END IF;
 
     IF p_verbose THEN
@@ -209,59 +209,59 @@ BEGIN
 
             -- EVALUACIÓN MATEMÁTICA CON TRIPLE VÍA (BYPASS / AND / OR)
             IF v_force_bloat_kb IS NOT NULL AND v_total_bloat_kb >= v_force_bloat_kb THEN
-                v_requiere_vf := TRUE; -- BYPASS DIRECTO POR TAMAÑO MASIVO
+                v_requires_vf := TRUE; -- BYPASS DIRECTO POR TAMAÑO MASIVO
             ELSIF v_op_upper = 'AND' THEN
-                v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
+                v_requires_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
             ELSE
-                v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
+                v_requires_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
             END IF;
 
-            IF p_enable_deep_scan AND v_requiere_vf THEN
+            IF p_enable_deep_scan AND v_requires_vf THEN
                 SELECT * INTO r_deep FROM pgstattuple(r_table.table_oid);
                 
                 v_total_bloat_pct := COALESCE(r_deep.free_percent, 0.00) + COALESCE(r_deep.dead_tuple_percent, 0.00);
                 v_total_bloat_kb  := ROUND(((COALESCE(r_deep.free_space, 0) + COALESCE(r_deep.dead_tuple_len, 0)) / 1024.0), 2);
                 
                 IF v_force_bloat_kb IS NOT NULL AND v_total_bloat_kb >= v_force_bloat_kb THEN
-                    v_requiere_vf := TRUE;
+                    v_requires_vf := TRUE;
                 ELSIF v_op_upper = 'AND' THEN
-                    v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
+                    v_requires_vf := (v_total_bloat_pct >= p_bloat_pct_threshold AND v_total_bloat_kb >= v_threshold_kb);
                 ELSE
-                    v_requiere_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
+                    v_requires_vf := (v_total_bloat_pct >= p_bloat_pct_threshold OR v_total_bloat_kb >= v_threshold_kb);
                 END IF;
 
                 INSERT INTO maint.pgstattuple (
                     evaluation_date, schema_name, table_name, 
                     approx_scanned, approx_evaluated_at, approx_table_len, approx_scanned_percent, approx_tuple_count, approx_tuple_len, approx_tuple_percent, approx_dead_tuple_count, approx_dead_tuple_len, approx_dead_tuple_percent, approx_free_space, approx_free_percent,
                     deep_scanned, deep_evaluated_at, deep_table_len, deep_tuple_count, deep_tuple_len, deep_tuple_percent, deep_dead_tuple_count, deep_dead_tuple_len, deep_dead_tuple_percent, deep_free_space, deep_free_percent,
-                    total_bloat_kb, total_bloat_pct, requiere_vf
+                    total_bloat_kb, total_bloat_pct, requires_vf
                 ) VALUES (
                     v_today, r_table.schema_name, r_table.table_name, 
                     TRUE, clock_timestamp(), COALESCE(r_approx.table_len, 0), COALESCE(r_approx.scanned_percent, 0.00), COALESCE(r_approx.approx_tuple_count, 0), COALESCE(r_approx.approx_tuple_len, 0), COALESCE(r_approx.approx_tuple_percent, 0.00), COALESCE(r_approx.dead_tuple_count, 0), COALESCE(r_approx.dead_tuple_len, 0), COALESCE(r_approx.dead_tuple_percent, 0.00), COALESCE(r_approx.approx_free_space, 0), COALESCE(r_approx.approx_free_percent, 0.00),
                     TRUE, clock_timestamp(), COALESCE(r_deep.table_len, 0), COALESCE(r_deep.tuple_count, 0), COALESCE(r_deep.tuple_len, 0), COALESCE(r_deep.tuple_percent, 0.00), COALESCE(r_deep.dead_tuple_count, 0), COALESCE(r_deep.dead_tuple_len, 0), COALESCE(r_deep.dead_tuple_percent, 0.00), COALESCE(r_deep.free_space, 0), COALESCE(r_deep.free_percent, 0.00),
-                    v_total_bloat_kb, v_total_bloat_pct, v_requiere_vf
+                    v_total_bloat_kb, v_total_bloat_pct, v_requires_vf
                 ) ON CONFLICT (evaluation_date, schema_name, table_name) DO UPDATE SET
                     approx_scanned = TRUE, approx_evaluated_at = clock_timestamp(), approx_table_len = EXCLUDED.approx_table_len, approx_scanned_percent = EXCLUDED.approx_scanned_percent, approx_tuple_count = EXCLUDED.approx_tuple_count, approx_tuple_len = EXCLUDED.approx_tuple_len, approx_tuple_percent = EXCLUDED.approx_tuple_percent, approx_dead_tuple_count = EXCLUDED.approx_dead_tuple_count, approx_dead_tuple_len = EXCLUDED.approx_dead_tuple_len, approx_dead_tuple_percent = EXCLUDED.approx_dead_tuple_percent, approx_free_space = EXCLUDED.approx_free_space, approx_free_percent = EXCLUDED.approx_free_percent,
                     deep_scanned = TRUE, deep_evaluated_at = clock_timestamp(), deep_table_len = EXCLUDED.deep_table_len, deep_tuple_count = EXCLUDED.deep_tuple_count, deep_tuple_len = EXCLUDED.deep_tuple_len, deep_tuple_percent = EXCLUDED.deep_tuple_percent, deep_dead_tuple_count = EXCLUDED.deep_dead_tuple_count, deep_dead_tuple_len = EXCLUDED.deep_dead_tuple_len, deep_dead_tuple_percent = EXCLUDED.deep_dead_tuple_percent, deep_free_space = EXCLUDED.deep_free_space, deep_free_percent = EXCLUDED.deep_free_percent,
-                    total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, requiere_vf = EXCLUDED.requiere_vf;
+                    total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, requires_vf = EXCLUDED.requires_vf;
                 
                 v_sniped := v_sniped + 1;
             ELSE
                 INSERT INTO maint.pgstattuple (
                     evaluation_date, schema_name, table_name, 
                     approx_scanned, approx_evaluated_at, approx_table_len, approx_scanned_percent, approx_tuple_count, approx_tuple_len, approx_tuple_percent, approx_dead_tuple_count, approx_dead_tuple_len, approx_dead_tuple_percent, approx_free_space, approx_free_percent,
-                    total_bloat_kb, total_bloat_pct, requiere_vf
+                    total_bloat_kb, total_bloat_pct, requires_vf
                 ) VALUES (
                     v_today, r_table.schema_name, r_table.table_name, 
                     TRUE, clock_timestamp(), COALESCE(r_approx.table_len, 0), COALESCE(r_approx.scanned_percent, 0.00), COALESCE(r_approx.approx_tuple_count, 0), COALESCE(r_approx.approx_tuple_len, 0), COALESCE(r_approx.approx_tuple_percent, 0.00), COALESCE(r_approx.dead_tuple_count, 0), COALESCE(r_approx.dead_tuple_len, 0), COALESCE(r_approx.dead_tuple_percent, 0.00), COALESCE(r_approx.approx_free_space, 0), COALESCE(r_approx.approx_free_percent, 0.00),
-                    v_total_bloat_kb, v_total_bloat_pct, v_requiere_vf
+                    v_total_bloat_kb, v_total_bloat_pct, v_requires_vf
                 ) ON CONFLICT (evaluation_date, schema_name, table_name) DO UPDATE SET
                     approx_scanned = TRUE, approx_evaluated_at = clock_timestamp(), approx_table_len = EXCLUDED.approx_table_len, approx_scanned_percent = EXCLUDED.approx_scanned_percent, approx_tuple_count = EXCLUDED.approx_tuple_count, approx_tuple_len = EXCLUDED.approx_tuple_len, approx_tuple_percent = EXCLUDED.approx_tuple_percent, approx_dead_tuple_count = EXCLUDED.approx_dead_tuple_count, approx_dead_tuple_len = EXCLUDED.approx_dead_tuple_len, approx_dead_tuple_percent = EXCLUDED.approx_dead_tuple_percent, approx_free_space = EXCLUDED.approx_free_space, approx_free_percent = EXCLUDED.approx_free_percent,
-                    total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, requiere_vf = EXCLUDED.requiere_vf;
+                    total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, requires_vf = EXCLUDED.requires_vf;
             END IF;
 
-            IF v_requiere_vf THEN
-                v_requiere_vf_count := v_requiere_vf_count + 1;
+            IF v_requires_vf THEN
+                v_requires_vf_count := v_requires_vf_count + 1;
             END IF;
 
         EXCEPTION WHEN OTHERS THEN
@@ -271,7 +271,7 @@ BEGIN
     END LOOP;
 
     IF p_verbose THEN 
-        RAISE INFO '[✓] TRIAGE FINALIZADO. Evaluadas: %, Deep Scans: %, Requiere VF: %', v_processed, v_sniped, v_requiere_vf_count; 
+        RAISE INFO '[✓] TRIAGE FINALIZADO. Evaluadas: %, Deep Scans: %, requires VF: %', v_processed, v_sniped, v_requires_vf_count; 
     END IF;
 END;
 $$;
@@ -344,11 +344,11 @@ BEGIN
     END IF;
 
     IF v_profile_upper NOT IN ('SMART', 'FORCE_SURGERY') THEN
-        RAISE EXCEPTION 'CRÍTICO: El perfil solo admite ''SMART'' o ''FORCE_SURGERY''.';
+        RAISE EXCEPTION 'CRITICAL: El perfil solo admite ''SMART'' o ''FORCE_SURGERY''.';
     END IF;
 
     IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN
-        RAISE EXCEPTION 'CRÍTICO: El ámbito (p_scope) "%" no es válido. Use SMART_USER, SMART_SYSTEM, SMART_SYSTEM_USER o CUSTOM_LIST.', p_scope;
+        RAISE EXCEPTION 'CRITICAL: El ámbito (p_scope) "%" no es válido. Use SMART_USER, SMART_SYSTEM, SMART_SYSTEM_USER o CUSTOM_LIST.', p_scope;
     END IF;
 
     IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN
@@ -453,30 +453,30 @@ BEGIN
           )
     ) LOOP
         IF v_profile_upper = 'FORCE_SURGERY' THEN
-            INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
+            INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct, bloat_kb, sustained_days_met, status) 
             VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, 0, 'PENDING');
             v_total_tasks := v_total_tasks + 1;
         ELSE
             v_force_bypass := (v_force_bloat_kb IS NOT NULL AND r_table.total_bloat_kb >= v_force_bloat_kb);
 
             IF v_force_bypass THEN
-                INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
+                INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct, bloat_kb, sustained_days_met, status) 
                 VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, 0, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
             ELSIF (
                 (v_op_upper = 'AND' AND r_table.total_bloat_pct >= p_bloat_pct_threshold AND r_table.total_bloat_kb >= v_bloat_kb_threshold) OR
                 (v_op_upper = 'OR'  AND (r_table.total_bloat_pct >= p_bloat_pct_threshold OR r_table.total_bloat_kb >= v_bloat_kb_threshold))
             ) THEN
-                SELECT COUNT(*), COALESCE(SUM(CASE WHEN requiere_vf THEN 1 ELSE 0 END), 0) 
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN requires_vf THEN 1 ELSE 0 END), 0) 
                 INTO v_hist_total, v_hist_true 
                 FROM (
-                    SELECT requiere_vf FROM maint.pgstattuple 
+                    SELECT requires_vf FROM maint.pgstattuple 
                     WHERE schema_name = r_table.schema_name AND table_name = r_table.table_name 
                     ORDER BY evaluation_date DESC LIMIT p_sustained_days
                 ) sub;
 
                 IF v_hist_total >= p_sustained_days AND v_hist_total = v_hist_true THEN
-                    INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct_evaluado, bloat_kb_evaluado, sustained_days_met, status) 
+                    INSERT INTO maint.vacuum_full_tasks (job_id, schema_name, table_name, bloat_pct, bloat_kb, sustained_days_met, status) 
                     VALUES (v_job_id, r_table.schema_name, r_table.table_name, LEAST(r_table.total_bloat_pct, 999999999.99), r_table.total_bloat_kb, v_hist_total, 'PENDING');
                     v_total_tasks := v_total_tasks + 1;
                 END IF;
@@ -521,7 +521,7 @@ BEGIN
                     SET status = 'FAILED_SILENT_ANOMALY', ended_at = clock_timestamp(), new_relfilenode = v_new_node, 
                         error_log = 'Engine returned success, but relfilenode did not change. Physical rewrite failed.' 
                     WHERE task_id = r_finished.task_id;
-                    IF p_verbose THEN RAISE WARNING '    [ANOMALÍA] %.% terminó, pero relfilenode (%) NO CAMBIÓ.', r_finished.schema_name, r_finished.table_name, v_new_node; END IF;
+                    IF p_verbose THEN RAISE WARNING '    [ANOMALY] %.% terminó, pero relfilenode (%) NO CAMBIÓ.', r_finished.schema_name, r_finished.table_name, v_new_node; END IF;
                 ELSE
                     UPDATE maint.vacuum_full_tasks 
                     SET status = 'SUCCESS', ended_at = clock_timestamp(), new_relfilenode = v_new_node 
@@ -617,11 +617,11 @@ BEGIN
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
-            SELECT task_id, schema_name, table_name, bloat_kb_evaluado, sustained_days_met 
+            SELECT task_id, schema_name, table_name, bloat_kb, sustained_days_met 
             INTO v_task_id, v_schema, v_table, v_bloat_kb_eval, v_days_met 
             FROM maint.vacuum_full_tasks 
             WHERE job_id = v_job_id AND status = 'PENDING' 
-            ORDER BY bloat_kb_evaluado ASC, task_id ASC 
+            ORDER BY bloat_kb ASC, task_id ASC 
             LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
