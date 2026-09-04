@@ -1,12 +1,17 @@
-```
+
+### 📄 DOCUMENTO OFICIAL ACTUALIZADO (LISTO PARA COPIAR Y PEGAR)
+
+```text
 ██████╗   ██████╗      ██████╗ ███████╗ ██████╗ ██╗        ███╗   ██╗  █████╗  ██████╗ ███╗   ██╗ ████████╗
 ██╔══██╗ ██╔════╝     ██╔════╝ ██╔════╝██╔═══██╗██║        ████╗ ████║██╔══██╗   ██║   ████╗  ██║ ╚══██╔══╝
 ██████╔╝ ██║  ███╗    ██║      ███████╗██║   ██║██║        ██╔████╔██║███████║   ██║   ██╔██╗ ██║    ██║   
 ██╔═══╝  ██║   ██║    ██║      ╚════██║██║▄▄ ██║██║        ██║╚██╔╝██║██╔══██║   ██║   ██║╚██╗██║    ██║   
 ██║      ╚██████╔╝    ╚██████╗ ███████║╚██████╔╝███████╗   ██║ ╚═╝ ██║██║  ██║ ██████╗ ██║ ╚████║    ██║   
 ╚═╝       ╚═════╝      ╚═════╝ ╚══════╝ ╚══▀▀═╝ ╚══════╝   ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝    ╚═╝   
+
 ```
-# 🛡️ pg-csql-maint 
+
+# 🛡️ pg-csql-maint
 
 **pg-csql-maint** es la suite definitiva de orquestación asíncrona, predictiva  para el mantenimiento de bases de datos PostgreSQL de alta transaccionalidad.
 
@@ -31,8 +36,6 @@ A continuación, se presentan las rutinas de ejecución para cada uno de los 4 p
 
 > 💡 **Nota de Configuración Táctica:** Los valores de los ejemplos están calibrados según el impacto de la operación. `VACUUM` y `ANALYZE` utilizan umbrales **bajos/tranquilos** para mantenimiento preventivo diario. `REINDEX` usa umbrales **flexibles** para controlar el I/O, y `VACUUM FULL` usa umbrales **agresivos/restrictivos** para evitar cirugías bloqueantes a menos que la situación sea crítica.
 
-
-
 ### 1. 📊 Módulo ANALYZE (Actualización del Optimizador)
 
 Refresca el mapa estadístico del planificador de consultas de PostgreSQL. Valores tranquilos para mantener el optimizador ágil.
@@ -47,8 +50,8 @@ CALL maint.sp_orchestrate_analyze(
     
     -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para planificador fresco):
     p_threshold_pct     => 10.00,             -- Actúa si el 5% de la tabla ha sufrido modificaciones
-    p_min_chg_rows      => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
-    p_force_chg_rows    => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
+    p_min_mod_tuples    => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
+    p_force_mod_tuples  => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
     
     p_cutoff_time       => '06:00:00'::TIME, -- Límite horario para no solapar procesos matutinos
     p_keep_history      => TRUE              -- Auditoría: Conservar log de ejecuciones
@@ -71,8 +74,8 @@ CALL maint.sp_orchestrate_vacuum(
     
     -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para barrido diario):
     p_threshold_pct     => 20.00,             -- Mínimo de basura porcentual (5% de tuplas muertas)
-    p_min_dead_rows     => 1000,             -- Filtro anti-morralla (Ignora tablas con < 5,000 tuplas muertas)
-    p_force_dead_rows   => 50000,            -- Bypass de emergencia: Fuerza ejecución si supera 50,000 muertas
+    p_min_dead_tuples   => 1000,             -- Filtro anti-morralla (Ignora tablas con < 5,000 tuplas muertas)
+    p_force_dead_tuples => 50000,            -- Bypass de emergencia: Fuerza ejecución si supera 50,000 muertas
     
     p_keep_history      => TRUE              -- Auditoría: Conservar historial en maint.vacuum_tasks
 );
@@ -97,7 +100,7 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_bloat_pct_threshold => 45.00,          -- Exige que la tabla esté inflada al menos un 45%
     p_bloat_mb_threshold  => 5120.00,        -- Exige que la tabla tenga al menos 5 GB recuperables
     p_threshold_operator  => 'AND',           -- DEBE cumplir una de las dos condiciones para aplicar (Súper estricto)
-    p_sustained_days      => 5,             -- La anomalía debe persistir 10 días seguidos sin solución
+    p_sustained_days      => 5,              -- La anomalía debe persistir 10 días seguidos sin solución
     p_min_table_mb        => 1024.00,        -- Solo evalúa tablas que pesan 1 GB o más
     p_force_bloat_mb      => 20480.00,       -- Bypass de Rescate: Si la tabla tiene 20 GB de bloat, entra de golpe
     p_enable_deep_scan    => FALSE,          -- Desactiva escaneo de bloque lento (Usa aproximación rápida)
@@ -106,7 +109,6 @@ CALL maint.sp_orchestrate_vacuum_full(
 );
 
 ```
-
 
 ### 4. 🌳 Módulo REINDEX (Desfragmentación B-Tree Cero-Bloqueo)
 
@@ -136,8 +138,6 @@ CALL maint.sp_orchestrate_reindex(
 
 ```
 
-
-
 ---
 
 ## 🛡️ Principios de Resiliencia (Zero-Trust & Self-Healing)
@@ -147,11 +147,9 @@ CALL maint.sp_orchestrate_reindex(
 3. **RAM Interception:** Inyecta tuning dinámico a los *background workers* (ej. `maintenance_work_mem`) copiando la configuración de la sesión orquestadora de forma segura, reseteando los privilegios al terminar.
 4. **Desacoplamiento de Snapshots:** Cero riesgo de bloqueos mutuos (*Deadlocks*). La orquestación libera continuamente los *snapshots* de transacción (`COMMIT;`) para permitir que la Fase 2 de índices concurrentes avance en milisegundos.
 
-
-
 ---
-# Umbrales mas usados.
 
+# Umbrales mas usados.
 
 ### Umbrales para ANALYZE (Actualización de Estadísticas)
 
@@ -190,6 +188,7 @@ El planificador de consultas de PostgreSQL depende de `ANALYZE` para saber cómo
 ---
 
 ### Umbrales para REINDEX (Compactación de Índices)
+
 La fragmentación de índices degrada las búsquedas. Siempre debe usarse la variante `REINDEX INDEX CONCURRENTLY` para no bloquear producción.
 
 | Estado | % Bloat en Índice | % Fragmentación Hoja | Cuándo aplicarlo y Síntomas |
@@ -197,4 +196,7 @@ La fragmentación de índices degrada las búsquedas. Siempre debe usarse la var
 | **Normal** | **< 10% - 15%** | **< 10%** | Comportamiento óptimo. La densidad del índice ronda el 90%. |
 | **Atención** | **20% - 30%** | **10% - 30%** | El índice ha crecido en tamaño desproporcionadamente frente a la tabla. Buen momento para programar un `REINDEX CONCURRENTLY` en horas valle. |
 | **Crítico** | **> 30% - 40%** | **> 50%** | Consultas por rango (ej. `BETWEEN`, `>`) muy lentas porque el motor tiene que saltar caóticamente por el disco. Costo de RAM elevado para cachear el índice. |
- 
+
+```
+
+```
