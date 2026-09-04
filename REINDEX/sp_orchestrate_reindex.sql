@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.4.2 (Grado Diamante - Dynamic Parameter Interception, Checksum & Triple Threshold)
+   VERSIÓN: V3.2.0  (Grado Diamante - Dynamic Parameter Interception, Checksum & Triple Threshold)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS maint.pgstatindex (
     total_bloat_kb NUMERIC(20,2) NOT NULL DEFAULT 0.00,
     total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00, -- [NUEVO] Porcentaje de espacio libre recuperable
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
-    requiere_reindex BOOLEAN NOT NULL DEFAULT FALSE,
+    requieres_reindex BOOLEAN NOT NULL DEFAULT FALSE,
     
     CONSTRAINT uq_pgstatindex_date_schema_index UNIQUE (evaluation_date, schema_name, index_name)
 );
@@ -109,9 +109,9 @@ CREATE TABLE IF NOT EXISTS maint.reindex_tasks (
     table_name VARCHAR(255) NOT NULL,
     index_name VARCHAR(255) NOT NULL,
     
-    frag_pct_evaluado NUMERIC(5,2) NOT NULL,
-    bloat_pct_evaluado NUMERIC(5,2) NOT NULL, -- [NUEVO] Auditoría forense del % de bloat al encolar
-    bloat_kb_evaluado NUMERIC(14,2) NOT NULL,
+    frag_pct NUMERIC(5,2) NOT NULL,
+    bloat_pct NUMERIC(5,2) NOT NULL, -- [NUEVO] Auditoría forense del % de bloat al encolar
+    bloat_kb NUMERIC(14,2) NOT NULL,
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     
     old_relfilenode BIGINT,               -- Checksum Físico de validación (Antes)
@@ -161,7 +161,7 @@ DECLARE
     v_processed INT := 0; v_sniped INT := 0;
     v_threshold_kb NUMERIC(14,2) := (p_bloat_mb_threshold * 1024.0);
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
-    v_requiere_reindex BOOLEAN := FALSE;
+    v_requieres_reindex BOOLEAN := FALSE;
     v_op_upper VARCHAR := UPPER(p_threshold_operator);
     
     v_leaf_frag NUMERIC(5,2); v_avg_density NUMERIC(5,2); v_empty_pages NUMERIC(5,2);
@@ -170,7 +170,7 @@ BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
 
-    IF v_op_upper NOT IN ('AND', 'OR') THEN RAISE EXCEPTION 'CRÍTICO: p_threshold_operator solo admite ''AND'' u ''OR''.'; END IF;
+    IF v_op_upper NOT IN ('AND', 'OR') THEN RAISE EXCEPTION 'CRITICAL: p_threshold_operator solo admite ''AND'' u ''OR''.'; END IF;
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
@@ -197,7 +197,7 @@ BEGIN
             -- Evaluador Zombi
             IF r_idx.is_invalid THEN
                 v_leaf_frag := 100.00; v_avg_density := 0.00; v_empty_pages := 100.00; v_est_bloat_kb := v_size_kb; v_total_bloat_pct := 100.00;
-                v_requiere_reindex := TRUE; 
+                v_requieres_reindex := TRUE; 
             ELSE
                 -- Evaluador Físico B-Tree (pgstatindex)
                 SELECT * INTO r_stat FROM pgstatindex(r_idx.index_oid);
@@ -210,22 +210,22 @@ BEGIN
 
                 -- EVALUACIÓN MATEMÁTICA CON TRIPLE VÍA (BYPASS / AND / OR)
                 IF (p_force_frag_pct IS NOT NULL AND v_leaf_frag >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND v_est_bloat_kb >= v_force_bloat_kb) THEN
-                    v_requiere_reindex := TRUE;
+                    v_requieres_reindex := TRUE;
                 ELSIF v_op_upper = 'AND' THEN
-                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold OR (v_total_bloat_pct >= p_bloat_pct_threshold AND v_est_bloat_kb >= v_threshold_kb));
+                    v_requieres_reindex := (v_leaf_frag >= p_frag_pct_threshold OR (v_total_bloat_pct >= p_bloat_pct_threshold AND v_est_bloat_kb >= v_threshold_kb));
                 ELSE
-                    v_requiere_reindex := (v_leaf_frag >= p_frag_pct_threshold OR v_total_bloat_pct >= p_bloat_pct_threshold OR v_est_bloat_kb >= v_threshold_kb);
+                    v_requieres_reindex := (v_leaf_frag >= p_frag_pct_threshold OR v_total_bloat_pct >= p_bloat_pct_threshold OR v_est_bloat_kb >= v_threshold_kb);
                 END IF;
             END IF;
 
             INSERT INTO maint.pgstatindex (
-                evaluation_date, schema_name, table_name, index_name, index_size_kb, leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, total_bloat_kb, total_bloat_pct, is_invalid, requiere_reindex
+                evaluation_date, schema_name, table_name, index_name, index_size_kb, leaf_fragmentation_pct, avg_leaf_density_pct, empty_pages_pct, total_bloat_kb, total_bloat_pct, is_invalid, requieres_reindex
             ) VALUES (
-                v_today, r_idx.schema_name, r_idx.table_name, r_idx.index_name, v_size_kb, v_leaf_frag, v_avg_density, v_empty_pages, v_est_bloat_kb, v_total_bloat_pct, r_idx.is_invalid, v_requiere_reindex
+                v_today, r_idx.schema_name, r_idx.table_name, r_idx.index_name, v_size_kb, v_leaf_frag, v_avg_density, v_empty_pages, v_est_bloat_kb, v_total_bloat_pct, r_idx.is_invalid, v_requieres_reindex
             ) ON CONFLICT (evaluation_date, schema_name, index_name) DO UPDATE SET
-                index_size_kb = EXCLUDED.index_size_kb, leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, avg_leaf_density_pct = EXCLUDED.avg_leaf_density_pct, empty_pages_pct = EXCLUDED.empty_pages_pct, total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, is_invalid = EXCLUDED.is_invalid, requiere_reindex = EXCLUDED.requiere_reindex;
+                index_size_kb = EXCLUDED.index_size_kb, leaf_fragmentation_pct = EXCLUDED.leaf_fragmentation_pct, avg_leaf_density_pct = EXCLUDED.avg_leaf_density_pct, empty_pages_pct = EXCLUDED.empty_pages_pct, total_bloat_kb = EXCLUDED.total_bloat_kb, total_bloat_pct = EXCLUDED.total_bloat_pct, is_invalid = EXCLUDED.is_invalid, requieres_reindex = EXCLUDED.requieres_reindex;
             
-            IF v_requiere_reindex THEN v_sniped := v_sniped + 1; END IF;
+            IF v_requieres_reindex THEN v_sniped := v_sniped + 1; END IF;
 
         EXCEPTION WHEN OTHERS THEN
             IF p_verbose THEN RAISE WARNING 'Error analizando %.%: %', r_idx.schema_name, r_idx.index_name, SQLERRM; END IF;
@@ -233,7 +233,7 @@ BEGIN
         COMMIT; 
     END LOOP;
 
-    IF p_verbose THEN RAISE INFO '[✓] TRIAGE FINALIZADO. Evaluados: %, Requieren REINDEX: %', v_processed, v_sniped; END IF;
+    IF p_verbose THEN RAISE INFO '[✓] TRIAGE FINALIZADO. Evaluados: %, requieresn REINDEX: %', v_processed, v_sniped; END IF;
 END;
 $$;
 
@@ -307,12 +307,12 @@ BEGIN
     END IF;
 
     -- Validaciones Fail-Fast de Infraestructura
-    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN RAISE EXCEPTION 'CRÍTICO: Extensión "pg_background" ausente.'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN RAISE EXCEPTION 'CRITICAL: Extensión "pg_background" ausente.'; END IF;
     IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN RAISE EXCEPTION 'CRÍTICO [RECURSOS]: max_worker_processes insuficiente.'; END IF;
     IF p_parallel_workers < 1 OR p_parallel_workers > 4 THEN RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Para REINDEX, p_parallel_workers debe estar entre 1 y 4.'; END IF;
-    IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRÍTICO: Perfil inválido.'; END IF;
-    IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRÍTICO: Ámbito inválido.'; END IF;
-    IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN RAISE EXCEPTION 'ALERTA ROJA: FORCE_SURGERY requiere CUSTOM_LIST.'; END IF;
+    IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRITICAL: Perfil inválido.'; END IF;
+    IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRITICAL: Ámbito inválido.'; END IF;
+    IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN RAISE EXCEPTION 'ALERTA ROJA: FORCE_SURGERY requieres CUSTOM_LIST.'; END IF;
 
     -- =====================================================================
     -- 1. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL
@@ -365,14 +365,14 @@ BEGIN
     ) LOOP
 
         IF v_profile_upper = 'FORCE_SURGERY' THEN
-            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) 
+            INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
             VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
             v_total_tasks := v_total_tasks + 1;
         ELSE
             v_force_bypass := ((p_force_frag_pct IS NOT NULL AND r_idx.leaf_fragmentation_pct >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND r_idx.total_bloat_kb >= v_force_bloat_kb));
 
             IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR ((v_op_upper = 'AND' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR (r_idx.total_bloat_pct >= p_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold)))) OR ((v_op_upper = 'OR' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_pct >= p_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))) THEN
-                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct_evaluado, bloat_pct_evaluado, bloat_kb_evaluado, is_invalid, status) 
+                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
                 VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
             END IF;
@@ -414,7 +414,7 @@ BEGIN
                 
                 IF v_new_node = r_finished.old_relfilenode THEN
                     UPDATE maint.reindex_tasks SET status = 'FAILED_SILENT_ANOMALY', ended_at = clock_timestamp(), new_relfilenode = v_new_node, error_log = 'Engine returned success, but relfilenode did not change.' WHERE task_id = r_finished.task_id;
-                    IF p_verbose THEN RAISE WARNING '    [ANOMALÍA] %.% terminó, pero relfilenode (%) NO CAMBIÓ.', r_finished.schema_name, r_finished.index_name, v_new_node; END IF;
+                    IF p_verbose THEN RAISE WARNING '    [ANOMALY] %.% terminó, pero relfilenode (%) NO CAMBIÓ.', r_finished.schema_name, r_finished.index_name, v_new_node; END IF;
                 ELSE
                     UPDATE maint.reindex_tasks SET status = 'SUCCESS', ended_at = clock_timestamp(), new_relfilenode = v_new_node WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1; 
@@ -450,9 +450,9 @@ BEGIN
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
             IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
 
-            SELECT task_id, schema_name, table_name, index_name, bloat_kb_evaluado, bloat_pct_evaluado, frag_pct_evaluado, is_invalid 
+            SELECT task_id, schema_name, table_name, index_name, bloat_kb, bloat_pct, frag_pct, is_invalid 
             INTO v_task_id, v_schema, v_table, v_index, v_bloat_kb_eval, v_bloat_pct_eval, v_frag_pct_eval, r_idx.is_invalid 
-            FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, bloat_kb_evaluado ASC, task_id ASC LIMIT 1;
+            FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, bloat_kb ASC, task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
                 SELECT c.relfilenode INTO v_old_node FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = v_schema AND c.relname = v_index;
