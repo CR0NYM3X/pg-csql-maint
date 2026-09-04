@@ -197,6 +197,4 @@ La fragmentación de índices degrada las búsquedas. Siempre debe usarse la var
 | **Atención** | **20% - 30%** | **10% - 30%** | El índice ha crecido en tamaño desproporcionadamente frente a la tabla. Buen momento para programar un `REINDEX CONCURRENTLY` en horas valle. |
 | **Crítico** | **> 30% - 40%** | **> 50%** | Consultas por rango (ej. `BETWEEN`, `>`) muy lentas porque el motor tiene que saltar caóticamente por el disco. Costo de RAM elevado para cachear el índice. |
 
-```
-
-```
+ 
