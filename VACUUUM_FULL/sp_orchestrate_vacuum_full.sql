@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (VACUUM FULL)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.5.0 (Grado Diamante - relfilenode Checksum & Universal Late Binding)
+   VERSIÓN: V3.2.0 (Grado Diamante - relfilenode Checksum & Universal Late Binding)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
