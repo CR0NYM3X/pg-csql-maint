@@ -1,5 +1,5 @@
 -- =========================================================================================
---               DBA SQUAD: VANGUARD BLACK-OPS - SUITE DE MANTENIMIENTO
+--                DBA SQUAD: VANGUARD BLACK-OPS - SUITE DE MANTENIMIENTO
 -- =========================================================================================
 -- CONFIGURACIÓN DE PROGRAMACIÓN NATIVA CON EXTENSIÓN pg_cron
 -- Ubicación de pg_cron : postgres (Base de datos del sistema)
@@ -29,7 +29,7 @@ SELECT cron.schedule_in_database(
         p_enable_deep_scan    => FALSE,        -- Desactivado para no saturar I/O (Usa aproximación rápida)
         p_verbose             => FALSE         -- Ejecución silenciosa para logs del cron
     );$$,
-    'db_mantos',                           -- Base de datos destino explícita
+    'db_mantos',                               -- Base de datos destino explícita
     'postgres',                                -- Usuario con privilegios de ejecución
     TRUE
 );
@@ -43,22 +43,22 @@ SELECT cron.schedule_in_database(
 
 SELECT cron.schedule_in_database(
     'maint_vacuum_lunes_a_viernes',
-    '0 1 * * 1-5',                             -- Lunes a Viernes a la 01:00 AM
+    '0 1 * * 1-5',                              -- Lunes a Viernes a la 01:00 AM
     $$CALL maint.sp_orchestrate_vacuum(
-        p_scope            => 'SMART_USER',     -- Alcance: Evalúa las tablas de usuario con inteligencia
-        p_profile          => 'BALANCED',       -- Perfil: Balance ideal entre limpieza e I/O
+        p_scope             => 'SMART_USER',     -- Alcance: Evalúa las tablas de usuario con inteligencia
+        p_profile           => 'BALANCED',       -- Perfil: Balance ideal entre limpieza e I/O
         p_parallel_workers => 4,                -- Concurrencia: 4 hilos para barrido rápido en segundo plano
-        p_cutoff_time      => '05:00:00'::TIME, -- Freno de emergencia: Detener si llega a las 05:00 AM
-        p_verbose          => FALSE,            -- Diagnóstico: Desactivado para ejecución silenciosa en Cron
+        p_cutoff_time       => '05:00:00'::TIME, -- Freno de emergencia: Detener si llega a las 05:00 AM
+        p_verbose           => FALSE,            -- Diagnóstico: Desactivado para ejecución silenciosa en Cron
         
         -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para barrido diario):
-        p_threshold_pct    => 20.00,            -- Mínimo de basura porcentual (20% de tuplas muertas)
-        p_min_dead_rows    => 1000,             -- Filtro anti-morralla (Ignora tablas con < 1,000 tuplas muertas)
-        p_force_dead_rows  => 50000,            -- Bypass de emergencia: Fuerza ejecución si supera 50,000 muertas
+        p_threshold_pct     => 20.00,            -- Mínimo de basura porcentual (20% de tuplas muertas)
+        p_min_dead_tuples   => 1000,             -- Filtro anti-morralla (Ignora tablas con < 1,000 tuplas muertas)
+        p_force_dead_tuples => 50000,            -- Bypass de emergencia: Fuerza ejecución si supera 50,000 muertas
         
-        p_keep_history     => TRUE              -- Auditoría: Conservar historial en maint.vacuum_tasks
+        p_keep_history      => TRUE              -- Auditoría: Conservar historial en maint.vacuum_tasks
     );$$,
-    'db_mantos',                           -- Base de datos destino explícita
+    'db_mantos',                               -- Base de datos destino explícita
     'postgres',                                -- Usuario con privilegios de ejecución
     TRUE
 );
@@ -72,22 +72,22 @@ SELECT cron.schedule_in_database(
 
 SELECT cron.schedule_in_database(
     'maint_analyze_madrugada_diario',
-    '0 4 * * 0-5',                             -- Domingo a Viernes a las 04:00 AM (Excluye Sábados)
+    '0 4 * * 0-5',                              -- Domingo a Viernes a las 04:00 AM (Excluye Sábados)
     $$CALL maint.sp_orchestrate_analyze(
-        p_scope            => 'SMART_USER',     -- Alcance: Estadísticas de esquemas de usuario
-        p_profile          => 'NORMAL',         -- Perfil: Analiza con muestra estándar del sistema
+        p_scope             => 'SMART_USER',     -- Alcance: Estadísticas de esquemas de usuario
+        p_profile           => 'NORMAL',         -- Perfil: Analiza con muestra estándar del sistema
         p_parallel_workers => 4,                -- Concurrencia: Actualiza 4 tablas de forma simultánea
-        p_verbose          => FALSE,            -- Diagnóstico: Silencioso
+        p_verbose           => FALSE,            -- Diagnóstico: Silencioso
         
         -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para planificador fresco):
-        p_threshold_pct    => 10.00,            -- Actúa si el 10% de la tabla ha sufrido modificaciones
-        p_min_chg_rows     => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
-        p_force_chg_rows   => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
+        p_threshold_pct     => 10.00,            -- Actúa si el 10% de la tabla ha sufrido modificaciones
+        p_min_mod_tuples    => 1000,             -- Requiere al menos 1,000 cambios reales para actuar
+        p_force_mod_tuples  => 50000,            -- Bypass: Si cambian 50,000 filas, actualiza de inmediato
         
-        p_cutoff_time      => '06:00:00'::TIME, -- Límite horario para no solapar procesos matutinos
-        p_keep_history     => TRUE              -- Auditoría: Conservar log de ejecuciones
+        p_cutoff_time       => '06:00:00'::TIME, -- Límite horario para no solapar procesos matutinos
+        p_keep_history      => TRUE              -- Auditoría: Conservar log de ejecuciones
     );$$,
-    'db_mantos',                           -- Base de datos destino explícita
+    'db_mantos',                               -- Base de datos destino explícita
     'postgres',                                -- Usuario con privilegios de ejecución
     TRUE
 );
@@ -118,8 +118,8 @@ SELECT cron.schedule_in_database(
             p_bloat_pct_threshold => 45.00,            -- Exige que la tabla esté inflada al menos un 45%
             p_bloat_mb_threshold  => 5120.00,          -- Exige que la tabla tenga al menos 5 GB recuperables
             p_threshold_operator  => 'AND',             -- DEBE cumplir ambas condiciones para aplicar (Súper estricto)
-            p_sustained_days      => 5,               -- La anomalía debe persistir 5 días seguidos en el Radar
-            p_min_table_mb        => 500.00,          -- Solo evalúa tablas que pesan 1 GB o más
+            p_sustained_days      => 5,                -- La anomalía debe persistir 5 días seguidos en el Radar
+            p_min_table_mb        => 500.00,           -- Solo evalúa tablas que pesan 1 GB o más
             p_force_bloat_mb      => 20480.00,         -- Bypass de Rescate: Si la tabla tiene 20 GB de bloat, entra de golpe
             p_enable_deep_scan    => FALSE,            -- Desactiva escaneo de bloque lento (Usa aproximación rápida)
             
@@ -136,8 +136,8 @@ SELECT cron.schedule_in_database(
             
             -- UMBRALES ANULADOS (Fuerza Bruta para actualizar tablas operadas y sanas):
             p_threshold_pct    => 0.00,                -- Sin umbral de porcentaje
-            p_min_chg_rows     => 0,                   -- Sin mínimo de cambios
-            p_force_chg_rows   => 0,                   -- Sin bypass necesario
+            p_min_mod_tuples   => 0,                   -- Sin mínimo de cambios
+            p_force_mod_tuples => 0,                   -- Sin bypass necesario
             
             p_cutoff_time      => '06:00:00'::TIME,    -- Freno final antes de la apertura de servicios
             p_keep_history     => FALSE                -- No saturar la tabla de auditoría con el Analyze masivo
@@ -145,7 +145,7 @@ SELECT cron.schedule_in_database(
     END;
     $block$;
     $$,
-    'db_mantos',                           -- Base de datos destino explícita
+    'db_mantos',                               -- Base de datos destino explícita
     'postgres',                                -- Usuario con privilegios de ejecución
     TRUE
 );
@@ -179,7 +179,7 @@ SELECT cron.schedule_in_database(
         p_rebuild_invalid     => TRUE,             -- Zombis: Reconstrucción forzada y prioritaria de índices caídos
         p_keep_history        => TRUE              -- Auditoría: Conservar historial forense
     );$$,
-    'db_mantos',                           -- Base de datos destino explícita
+    'db_mantos',                               -- Base de datos destino explícita
     'postgres',                                -- Usuario con privilegios de ejecución
     TRUE
 );
