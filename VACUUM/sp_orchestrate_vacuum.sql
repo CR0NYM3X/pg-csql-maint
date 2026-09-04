@@ -9,7 +9,7 @@
                                
    MÓDULO: Orquestador Asíncrono de Mantenimiento de Bases de Datos (Vacuum)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.1.4 (Grado Diamante - Smart Triage & Polymorphic Dynamic Execution)
+   VERSIÓN: V3.2.0  (Grado Diamante - Smart Triage & Polymorphic Dynamic Execution)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS maint.vacuum_tasks (
     table_name TEXT NOT NULL,                                   
     n_live_tup BIGINT,                                          
     n_dead_tup BIGINT,                                          
-    dead_pct NUMERIC(12,2),                                      
+    dead_tuples_pct NUMERIC(12,2),                                      
     status VARCHAR(30) DEFAULT 'PENDING',                       
     child_pid INT,                                              
     child_cookie BIGINT,                                          -- [HOMOLOGACIÓN UNIVERSAL]: Token de seguridad v2.0
@@ -89,7 +89,7 @@ COMMENT ON COLUMN maint.vacuum_tasks.schema_name IS 'Nombre del esquema de base 
 COMMENT ON COLUMN maint.vacuum_tasks.table_name IS 'Nombre de la tabla física objetivo de la operación de mantenimiento.';
 COMMENT ON COLUMN maint.vacuum_tasks.n_live_tup IS 'Estimación de tuplas activas/vivas en la tabla según pg_stat_all_tables al encolar.';
 COMMENT ON COLUMN maint.vacuum_tasks.n_dead_tup IS 'Estimación de tuplas muertas/obsoletas en la tabla según pg_stat_all_tables al encolar.';
-COMMENT ON COLUMN maint.vacuum_tasks.dead_pct IS 'Porcentaje de degradación o espacio perdido calculado para ponderar la prioridad.';
+COMMENT ON COLUMN maint.vacuum_tasks.dead_tuples_pct IS 'Porcentaje de degradación o espacio perdido calculado para ponderar la prioridad.';
 COMMENT ON COLUMN maint.vacuum_tasks.status IS 'Estado específico de la tarea (PENDING, RUNNING, SUCCESS, FAILED, SKIPPED_TIME_LIMIT).';
 COMMENT ON COLUMN maint.vacuum_tasks.child_pid IS 'Identificador del proceso (PID) del worker de fondo lanzado por pg_background.';
 COMMENT ON COLUMN maint.vacuum_tasks.started_at IS 'Marca de tiempo del inicio del mantenimiento individual de esta tabla.';
@@ -173,8 +173,8 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum(
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado con Analyze)
-    p_min_dead_rows INT DEFAULT 5000,            -- Mínimo de tuplas muertas para evaluar
-    p_force_dead_rows INT DEFAULT 50000,         -- Tuplas muertas para FORZAR entrada (NULL para desactivar)
+    p_min_dead_tuples INT DEFAULT 5000,            -- Mínimo de tuplas muertas para evaluar
+    p_force_dead_tuples INT DEFAULT 50000,         -- Tuplas muertas para FORZAR entrada (NULL para desactivar)
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Purga detalles al terminar
 )
 LANGUAGE plpgsql AS $$
@@ -228,7 +228,7 @@ BEGIN
     -- 1-A. VALIDACIÓN ESTRICTA DEL PERFIL DINÁMICO
     SELECT * INTO r_profile FROM maint.vacuum_profiles WHERE UPPER(profile_name) = UPPER(p_profile);
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'CRITICO: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
+        RAISE EXCEPTION 'CRITICAL: El perfil "%" no existe en la tabla maint.vacuum_profiles.', p_profile;
     END IF;
 
     -- 1-B. SELF-HEALING Y RECONCILIACIÓN ESTRUCTURAL DE JOBS Y WORKERS HUÉRFANOS
@@ -304,8 +304,8 @@ BEGIN
         'profile', UPPER(p_profile),
         'parallel_workers', p_parallel_workers,
         'threshold_pct', p_threshold_pct,
-        'min_dead_tup', p_min_dead_rows,
-        'force_dead_tup', p_force_dead_rows,
+        'min_dead_tup', p_min_dead_tuples,
+        'force_dead_tup', p_force_dead_tuples,
         'cutoff_time', p_cutoff_time,
         'keep_history', p_keep_history,
         'pg_background_version', COALESCE(v_ext_version, '1.x')
@@ -318,7 +318,7 @@ BEGIN
     COMMIT;
 
     -- 3. POBLAR COLA DE TAREAS (TRIAGE CON BYPASS VIP Y FILTRO DE FUERZA BRUTA)
-    INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_pct)
+    INSERT INTO maint.vacuum_tasks (job_id, schema_name, table_name, n_live_tup, n_dead_tup, dead_tuples_pct)
     SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, st.n_dead_tup, 
            LEAST(ROUND(COALESCE((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100, 0.00), 2), 999999999.99)
     FROM pg_stat_all_tables st
@@ -340,9 +340,9 @@ BEGIN
       AND (
           (p_scope LIKE 'SMART%' AND (
               /*mf.force_maintenance = TRUE OR*/ (
-                  st.n_dead_tup >= p_min_dead_rows AND (
+                  st.n_dead_tup >= p_min_dead_tuples AND (
                       ((st.n_dead_tup::numeric / NULLIF(st.n_live_tup + st.n_dead_tup, 0)) * 100.0) >= p_threshold_pct
-                      OR (p_force_dead_rows IS NOT NULL AND st.n_dead_tup >= p_force_dead_rows)
+                      OR (p_force_dead_tuples IS NOT NULL AND st.n_dead_tup >= p_force_dead_tuples)
                   )
               )
           )) OR
@@ -407,7 +407,7 @@ BEGIN
                 -- Se conserva child_pid intacto para trazabilidad PCI-DSS / ISO 27001
                 UPDATE maint.vacuum_tasks SET status = 'SUCCESS', ended_at = clock_timestamp() WHERE task_id = r_finished.task_id;
                 v_success_count := v_success_count + 1; 
-                IF p_verbose THEN RAISE INFO '    [✓] EXITO -> %.%', r_finished.schema_name, r_finished.table_name; END IF;
+                IF p_verbose THEN RAISE INFO '    [✓] SUCCESS -> %.%', r_finished.schema_name, r_finished.table_name; END IF;
 
             EXCEPTION WHEN OTHERS THEN
                 UPDATE maint.vacuum_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM WHERE task_id = r_finished.task_id;
