@@ -9,7 +9,7 @@
                                
    MÓDULO: Orquestador Asíncrono de Mantenimiento de Estadísticas (ANALYZE)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: 3.1.2 (Grado Diamante - Direct INTO Extraction & Polymorphic Immunity)
+   VERSIÓN: V3.2.0 (Grado Diamante - Direct INTO Extraction & Polymorphic Immunity)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -82,8 +82,8 @@ CREATE TABLE IF NOT EXISTS maint.analyze_tasks (
     job_id BIGINT NOT NULL REFERENCES maint.jobs(job_id) ON DELETE CASCADE,
     schema_name TEXT NOT NULL,
     table_name TEXT NOT NULL,
-    total_filas BIGINT,                      
-    filas_afectadas BIGINT,                  
+    live_tuples BIGINT,                      
+    modified_tuples BIGINT,                  
     drift_pct NUMERIC(12,2),                  
     status VARCHAR(30) DEFAULT 'PENDING', 
     child_pid INT,
@@ -126,8 +126,8 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_analyze(
     p_parallel_workers INT DEFAULT 4,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_threshold_pct NUMERIC DEFAULT 5.00,       -- 5.00 = 5% (Homologado)
-    p_min_chg_rows INT DEFAULT 1000,            -- Mínimo de cambios para evaluar
-    p_force_chg_rows INT DEFAULT 50000,         -- Filas modificadas para FORZAR entrada (NULL para desactivar)
+    p_min_mod_tuples INT DEFAULT 1000,            -- Mínimo de cambios para evaluar
+    p_force_mod_tuples INT DEFAULT 50000,         -- Filas modificadas para FORZAR entrada (NULL para desactivar)
     p_cutoff_time TIME DEFAULT NULL,
     p_keep_history BOOLEAN DEFAULT TRUE         -- TRUE = Conserva auditoría; FALSE = Limpia tareas al finalizar
 )
@@ -163,7 +163,7 @@ BEGIN
     IF UPPER(p_profile) = 'PRELOAD' THEN 
         v_max_stages := 3; 
     ELSIF UPPER(p_profile) <> 'NORMAL' THEN
-        RAISE EXCEPTION 'CRITICO: El perfil "%" no es valido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
+        RAISE EXCEPTION 'CRITICAL: El perfil "%" no es valido en maint.sp_orchestrate_analyze. Use "NORMAL" o "PRELOAD".', p_profile;
     END IF;
 
     -- =====================================================================
@@ -247,8 +247,8 @@ BEGIN
         'profile', UPPER(p_profile),
         'parallel_workers', p_parallel_workers,
         'threshold_pct', p_threshold_pct,
-        'min_rows', p_min_chg_rows,
-        'force_rows', p_force_chg_rows,
+        'min_rows', p_min_mod_tuples,
+        'force_rows', p_force_mod_tuples,
         'cutoff_time', p_cutoff_time,
         'keep_history', p_keep_history,
         'pg_background_version', COALESCE(v_ext_version, '1.x')
@@ -270,7 +270,7 @@ BEGIN
 
         -- POBLAR COLA PARA LA FASE ACTUAL
        -- Reemplaza la línea del SELECT en la inserción de maint.analyze_tasks por:
-       INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, total_filas, filas_afectadas, drift_pct, stage_number)
+       INSERT INTO maint.analyze_tasks (job_id, schema_name, table_name, live_tuples, modified_tuples, drift_pct, stage_number)
        SELECT v_job_id, st.schemaname, st.relname, st.n_live_tup, COALESCE(st.n_mod_since_analyze, 0),
              LEAST(ROUND((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100, 2), 999999999.99), v_current_stage
         FROM pg_stat_all_tables st
@@ -291,9 +291,9 @@ BEGIN
           )
           AND (
               (p_scope LIKE 'SMART%' AND (
-                  COALESCE(st.n_mod_since_analyze, 0) >= p_min_chg_rows AND (
+                  COALESCE(st.n_mod_since_analyze, 0) >= p_min_mod_tuples AND (
                       ((COALESCE(st.n_mod_since_analyze, 0)::numeric / NULLIF(st.n_live_tup, 0)) * 100.0) >= p_threshold_pct 
-                      OR (p_force_chg_rows IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_chg_rows)
+                      OR (p_force_mod_tuples IS NOT NULL AND COALESCE(st.n_mod_since_analyze, 0) >= p_force_mod_tuples)
                   )
               )) OR
               (p_scope NOT LIKE 'SMART%')
@@ -331,7 +331,7 @@ BEGIN
 
                     UPDATE maint.analyze_tasks SET status = 'SUCCESS', ended_at = clock_timestamp() WHERE task_id = r_finished.task_id;
                     v_success_count := v_success_count + 1;
-                    IF p_verbose THEN RAISE INFO '    [✓] EXITO (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
+                    IF p_verbose THEN RAISE INFO '    [✓] SUCCESS (Fase %) -> %.%', v_current_stage, r_finished.schema_name, r_finished.table_name; END IF;
 
                 EXCEPTION WHEN OTHERS THEN
                     UPDATE maint.analyze_tasks SET status = 'FAILED', ended_at = clock_timestamp(), error_log = SQLERRM WHERE task_id = r_finished.task_id;
