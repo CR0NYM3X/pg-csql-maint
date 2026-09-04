@@ -85,6 +85,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 ('lab', 'demo_index_vip',     FALSE, TRUE,  'REINDEX'); -- [PASE VIP]: Mantenimiento prioritario / Cirugía Ciega.
 
 
+
 ```
 
 ---
@@ -98,6 +99,7 @@ SELECT filter_id, schema_name, table_name, maintenance_action, is_ignored, force
 FROM maint.filters 
 WHERE schema_name = 'lab';
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -108,6 +110,7 @@ WHERE schema_name = 'lab';
          1 | lab         | demo_index_escudo | REINDEX            | t          | f
          2 | lab         | demo_index_vip    | REINDEX            | f          | t
 (2 rows)
+
 
 ```
 
@@ -131,6 +134,7 @@ JOIN pg_namespace n ON c.relnamespace = n.oid
 WHERE n.nspname = 'lab'
 ORDER BY n.nspname, t.relname, pg_relation_size(c.oid) DESC;
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -146,6 +150,7 @@ ORDER BY n.nspname, t.relname, pg_relation_size(c.oid) DESC;
  lab         | demo_index_zombi  | demo_index_zombi_pkey   |   1814034 |         1814034 | t        | 456 kB
  lab         | demo_index_zombi  | idx_zombi_fail          |   1814057 |         1814057 | t        | 176 kB
 (7 rows)
+
 
 ```
 
@@ -197,12 +202,13 @@ ORDER BY
         ELSE ((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100)
     END DESC;
 
+
 ```
 
 **Salida Esperada en Consola:**
 
 ```text
- schemaname |     tablename     |       indexname        | size_indice | leaf_frag_pct | avg_density_pct | pct_bloat | free_space_kb | free_space_mb 
+ schemaname |     tablename     |        indexname        | size_indice | leaf_frag_pct | avg_density_pct | pct_bloat | free_space_kb | free_space_mb 
 ------------+-------------------+------------------------+-------------+---------------+-----------------+-----------+---------------+---------------
  lab        | demo_index_bloat  | idx_bloat_heavy        | 15 MB       |         49.97 |           67.51 |     32.49 |       5146.42 |          5.03
  lab        | demo_index_escudo | idx_escudo_historial   | 4152 kB     |         10.51 |           52.04 |     47.96 |       1991.30 |          1.94
@@ -212,6 +218,7 @@ ORDER BY
  lab        | demo_index_zombi  | demo_index_zombi_pkey  | 456 kB      |             0 |           89.50 |     10.50 |         47.88 |          0.05
  lab        | demo_index_zombi  | idx_zombi_fail         | 176 kB      |             0 |           97.34 |      2.66 |          4.68 |          0.00
 (7 rows)
+
 
 ```
 
@@ -232,11 +239,12 @@ CALL maint.sp_pgstatindex(
     p_bloat_pct_threshold => 20.00,        -- [NUEVO V3.4.1] Umbral: Mayor o igual a 20% de espacio vacío
     p_bloat_mb_threshold  => 1.00,         -- Umbral: Mayor o igual a 1 MB de Bloat
     p_threshold_operator  => 'OR',         -- Compuerta Lógica
-    p_min_index_mb        => 0.00,         
+    p_min_index_mb        => 0.00,          
     p_force_frag_pct      => NULL,
     p_force_bloat_mb      => NULL,
     p_verbose             => TRUE
 );
+
 
 ```
 
@@ -248,6 +256,7 @@ INFO:  [DBA SQUAD] RADAR DE ÍNDICES V3.4.1 (LOGIC: OR | FRAG: %20.00 | BLOAT: %
 INFO:  =========================================================
 INFO:  [✓] TRIAGE FINALIZADO. Evaluados: 7, Requieren REINDEX: 3
 CALL
+
 
 ```
 
@@ -268,17 +277,18 @@ SELECT
     total_bloat_pct,    -- [NUEVO V3.4.1]
     total_bloat_kb, 
     is_invalid, 
-    requiere_reindex 
+    requires_reindex 
 FROM maint.pgstatindex 
 WHERE schema_name = 'lab' AND evaluation_date = CURRENT_DATE
-ORDER BY requiere_reindex DESC, schema_name, table_name,  index_size_kb DESC;
+ORDER BY requires_reindex DESC, schema_name, table_name,  index_size_kb DESC;
+
 
 ```
 
 **Salida Esperada en Consola:**
 
 ```text
- schema_name |    table_name     |       index_name       | index_size_kb | frag_pct | density_pct | total_bloat_pct | total_bloat_kb | is_invalid | requiere_reindex 
+ schema_name |    table_name     |        index_name       | index_size_kb | frag_pct | density_pct | total_bloat_pct | total_bloat_kb | is_invalid | requires_reindex 
 -------------+-------------------+------------------------+---------------+----------+-------------+-----------------+----------------+------------+------------------
  lab         | demo_index_bloat  | idx_bloat_heavy        |      16104.00 |    50.25 |       66.40 |           33.60 |        5410.94 | f          | t
  lab         | demo_index_escudo | idx_escudo_historial   |       4152.00 |    10.51 |       52.04 |           47.96 |        1991.30 | f          | t
@@ -288,6 +298,7 @@ ORDER BY requiere_reindex DESC, schema_name, table_name,  index_size_kb DESC;
  lab         | demo_index_zombi  | demo_index_zombi_pkey  |        456.00 |     0.00 |       89.50 |           10.50 |          47.88 | f          | f
  lab         | demo_index_zombi  | idx_zombi_fail         |        176.00 |     0.00 |       97.34 |            2.66 |           4.68 | f          | f
 (7 rows)
+
 
 ```
 
@@ -317,6 +328,7 @@ CALL maint.sp_orchestrate_reindex(
     p_keep_history        => TRUE
 );
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -340,6 +352,7 @@ INFO:  [✓] ORQUESTACION REINDEX FINALIZADA. Job 3 | Procesados: 2 / 2
 INFO:  Tiempo Total: 00:00:04.033813
 INFO:  =========================================================
 CALL
+
 
 ```
 
@@ -367,6 +380,7 @@ CALL maint.sp_orchestrate_reindex(
     p_keep_history        => TRUE
 );
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -385,6 +399,7 @@ INFO:  [✓] ORQUESTACION REINDEX FINALIZADA. Job 4 | Procesados: 2 / 2
 INFO:  Tiempo Total: 00:00:08.026497
 INFO:  =========================================================
 CALL
+
 
 ```
 
@@ -409,6 +424,7 @@ CALL maint.sp_orchestrate_reindex(
     p_verbose          => TRUE
 );
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -420,12 +436,10 @@ INFO:  =========================================================
 INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Procesados: 0 / 0
 CALL
 
+
 ```
 
-
-
 ---
-
 
 ### Consulta B-2: Inspección Directa de Telemetría B-Tree Vía `pgstatindex` (Auditoría Manual del Cliente)
 
@@ -473,12 +487,13 @@ ORDER BY
         ELSE ((pgstat.index_size::numeric * (100 - pgstat.avg_leaf_density)::numeric) / 100)
     END DESC;
 
+
 ```
 
 **Salida Esperada en Consola:**
 
 ```text
- schemaname |     tablename     |       indexname        | size_indice | leaf_frag_pct | avg_density_pct | pct_bloat | free_space_kb | free_space_mb 
+ schemaname |     tablename     |        indexname        | size_indice | leaf_frag_pct | avg_density_pct | pct_bloat | free_space_kb | free_space_mb 
 ------------+-------------------+------------------------+-------------+---------------+-----------------+-----------+---------------+---------------
  lab        | demo_index_bloat  | idx_bloat_heavy        | 3976 kB     |             0 |           89.80 |     10.20 |        405.55 |          0.40
  lab        | demo_index_escudo | idx_escudo_historial   | 4152 kB     |         10.51 |           52.04 |     47.96 |       1991.30 |          1.94
@@ -488,12 +503,8 @@ ORDER BY
  lab        | demo_index_zombi  | demo_index_zombi_pkey  | 456 kB      |             0 |           89.50 |     10.50 |         47.88 |          0.05
  lab        | demo_index_zombi  | idx_zombi_fail         | 176 kB      |             0 |           97.34 |      2.66 |          4.68 |          0.00
 (7 rows)
+
 ```
-
-
-
-
-
 
 ---
 
@@ -501,7 +512,7 @@ ORDER BY
 
 ### Consulta D: Bitácora de Tareas Finales (`maint.reindex_tasks`)
 
-Validando la integración de `bloat_pct_evaluado` y la confirmación de inodos.
+Validando la integración de `bloat_pct` y la confirmación de inodos.
 
 ```sql
 SELECT 
@@ -510,9 +521,9 @@ SELECT
     schema_name,
     table_name,
     index_name,
-    frag_pct_evaluado AS frag_eval,
-    bloat_pct_evaluado AS bloat_pct_eval, -- [NUEVO V3.4.1]
-    bloat_kb_evaluado AS bloat_eval_kb,
+    frag_pct AS frag_eval,
+    bloat_pct AS bloat_pct_eval, -- [NUEVO V3.4.1]
+    bloat_kb AS bloat_eval_kb,
     old_relfilenode AS "Inodo ANTES",
     new_relfilenode AS "Inodo DESPUÉS",
     CASE 
@@ -525,6 +536,7 @@ SELECT
 FROM maint.reindex_tasks
 ORDER BY task_id ASC;
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -534,8 +546,9 @@ ORDER BY task_id ASC;
 ---------+--------+-------------+------------------+--------------------+-----------+----------------+---------------+-------------+---------------+------------------------+---------+-----------+-----------------
        1 |      1 | lab         | demo_index_zombi | idx_zombi_fail     |    100.00 |         100.00 |        176.00 |     2891012 |       2891099 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1089201 | 00:00:01.012401
        2 |      1 | lab         | demo_index_bloat | idx_bloat_heavy    |     50.25 |          33.60 |       5410.94 |     2891040 |       2891105 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1089202 | 00:00:02.105411
-       3 |      2 | lab         | demo_index_vip   | idx_vip_facturas   |     49.62 |          34.06 |        719.35 |     2891060 |       2891122 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1089315 | 00:00:01.008120
+       3 |      2 | lab         | demo_index_vip    | idx_vip_facturas   |     49.62 |          34.06 |        719.35 |     2891060 |       2891122 | ✓ REESCRITURA CONFIRMADA | SUCCESS |   1089315 | 00:00:01.008120
 (3 rows)
+
 
 ```
 
@@ -560,6 +573,7 @@ CROSS JOIN LATERAL pgstatindex(c.oid) stat
 WHERE n.nspname = 'lab'
 ORDER BY total_mb DESC;
 
+
 ```
 
 **Salida Esperada en Consola:**
@@ -576,6 +590,7 @@ ORDER BY total_mb DESC;
  lab         | demo_index_zombi  | idx_zombi_fail      |     0.52 |         0.00 |           98.90 | t
 (7 rows)
 
+
 ```
 
 > **Análisis Métrico Final:**
@@ -584,9 +599,6 @@ ORDER BY total_mb DESC;
 > 3. `idx_escudo_historial`: **Permaneció intacto** (4.05 MB y 52% de densidad original), respetando el filtro absoluto de la lista negra, demostrando que el orquestador obedeció sin importar la fragmentación detectada.
 > 
 > 
-
- 
-
 
 ### Consulta F: Bitácora Maestra de Jobs (`maint.jobs`)
 
@@ -605,17 +617,19 @@ FROM maint.jobs
 WHERE maintenance_action = 'REINDEX'
 ORDER BY job_id DESC;
 
+
 ```
 
 **Salida Esperada en Consola:**
 
 ```text
- job_id |       job_type       | maintenance_action | orchestrator_pid | status    | indices_procesados |          started_at           |           ended_at            | duracion_total  
+ job_id |        job_type       | maintenance_action | orchestrator_pid | status    | indices_procesados |           started_at          |            ended_at           | duracion_total  
 --------+----------------------+--------------------+------------------+-----------+--------------------+-------------------------------+-------------------------------+-----------------
       3 | SMART_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  0 | 2026-08-28 14:10:00.120541+00 | 2026-08-28 14:10:00.450123+00 | 00:00:00.329582
       2 | CUSTOM_LIST_FORCE... | REINDEX            |          1089100 | COMPLETED |                  1 | 2026-08-28 14:05:12.891230+00 | 2026-08-28 14:05:14.785332+00 | 00:00:01.894102
       1 | SMART_USER_CONCURRENT  | REINDEX            |          1089100 | COMPLETED |                  2 | 2026-08-28 14:00:01.102340+00 | 2026-08-28 14:00:04.244358+00 | 00:00:03.142018
 (3 rows)
+
 
 ```
 
@@ -627,3 +641,5 @@ ORDER BY job_id DESC;
 2. **Reescritura Cero-Bloqueo (`CONCURRENTLY`):** Las reconstrucciones operan sin bloquear operaciones de lectura o escritura (`INSERT`, `UPDATE`, `DELETE`) en las tablas asociadas.
 3. **Interceptación de Recursos de Memoria (RAM Interception):** Modifica temporalmente la RAM asignada a los workers en segundo plano (`maintenance_work_mem`), restaurando limpiamente la configuración al terminar la sesión.
 4. **Validación Físico-Forense al 100%:** La comparación estricta de inodos (`old_relfilenode` vs `new_relfilenode`) certifica que cada tarea en `SUCCESS` sufrió la reescritura física de archivos en el almacenamiento.
+
+ 
