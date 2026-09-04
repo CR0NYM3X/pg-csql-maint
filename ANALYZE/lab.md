@@ -1,4 +1,3 @@
-
 # 🧪 LABORATORIO VANGUARD: POLÍGONO DE TIRO SQL
 
 Ejecuta este script completo en tu entorno de desarrollo/pruebas.
@@ -112,6 +111,7 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 ('lab', 'sesiones', TRUE, FALSE, 'ANALYZE'),  -- [ESCUDO ACTIVO]: Intocable.
 ('lab', 'carritos', FALSE, TRUE, 'ANALYZE');      -- [PASE VIP]: Mantenimiento prioritario.
 
+
 ```
 
 ---
@@ -128,11 +128,13 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
+WHERE      schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
+
 ```
 
 **Salida esperada**
+
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
@@ -147,13 +149,14 @@ ORDER BY change_pct DESC NULLS LAST;
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
+
 ```
 
-
-
 #### PASO 2: Dispara el Orquestador Vanguard (Modo Visual)
+
 En este escenario solo deberia de ejecutar la tabla lab.carritos esto debido a que la tabla lab.sesiones tiene aplicado el filtro en la tabla  maint.filters
 y la columna is_ignored esta en true para le mantenimiento analyze.
+
 ```sql
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
@@ -161,13 +164,16 @@ y la columna is_ignored esta en true para le mantenimiento analyze.
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
       p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_min_mod_tuples   => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
+
 ```
+
 **Salida esperada**
+
 ```
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
@@ -183,11 +189,13 @@ INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:01.017875
 INFO:  =========================================================
 CALL
+
 ```
 
+#### PASO 2: Verifica la Telemetría
 
-#### PASO 2: Verifica la Telemetría 
 Corroborar la información
+
 ```sql
   SELECT
     schemaname,
@@ -196,11 +204,13 @@ Corroborar la información
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
+WHERE      schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
+
 ```
 
 **Salida esperada**
+
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
@@ -215,28 +225,32 @@ ORDER BY change_pct DESC NULLS LAST;
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
-```
 
+```
 
 ## Forzando las tablas que tengan igual o mas de 3000 filas modificadas
-aqui unicamente se debe aplicar mantenimiento a la tabla lab.pedidos ya que lab.sesiones a pesar de cumplir con los requisitos 
+
+aqui unicamente se debe aplicar mantenimiento a la tabla lab.pedidos ya que lab.sesiones a pesar de cumplir con los requisitos
 tiene el un filtro en la tabla  maint.filters y la columna is_ignored esta en true para le mantenimiento analyze.
-```
+
+```sql
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
       p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_min_mod_tuples   => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 3000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
 
+
 ```
 
 **Salida esperada**
+
 ```
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
@@ -252,10 +266,13 @@ INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:01.016517
 INFO:  =========================================================
 CALL
+
 ```
 
-####  Verifica la Telemetría 
+#### Verifica la Telemetría
+
 Corroborar la información
+
 ```sql
   SELECT
     schemaname,
@@ -264,11 +281,13 @@ Corroborar la información
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
+WHERE      schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
+
 ```
 
 **Salida esperada**
+
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
@@ -283,27 +302,31 @@ ORDER BY change_pct DESC NULLS LAST;
  lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
 (10 rows)
+
 ```
 
 ## Ejecutar ahora los que tengan 5% y minimo 1500 filas modificadas
-aqui unicamente deberia aplicar para la tabla lab.logs_auditoria  este porque cumple con los requisitos de minimo de filas cambiadas 1500 y mas de 5% 
+
+aqui unicamente deberia aplicar para la tabla lab.logs_auditoria  este porque cumple con los requisitos de minimo de filas cambiadas 1500 y mas de 5%
 , la tabla lab.inventario  no aplica esto debido a que no cumple con el minimo de filas
-```
+
+```sql
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 5,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_threshold_pct    => 5,                  -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_mod_tuples   => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 3000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
+
 ```
 
-
 **Salida esperada**
+
 ```
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
@@ -319,10 +342,13 @@ INFO:  [✓] ORQUESTACION FINALIZADA. Job 4 | Tablas procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:01.016955
 INFO:  =========================================================
 CALL
+
 ```
 
-####  Verifica la Telemetría 
+#### Verifica la Telemetría
+
 Corroborar la información
+
 ```sql
   SELECT
     schemaname,
@@ -331,11 +357,13 @@ Corroborar la información
     n_mod_since_analyze AS filas_modificadas,
     ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
 FROM pg_stat_user_tables
-WHERE     schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
+WHERE      schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
 ORDER BY change_pct DESC NULLS LAST;
+
 ```
 
 **Salida esperada**
+
 ```
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
@@ -350,36 +378,37 @@ ORDER BY change_pct DESC NULLS LAST;
  lab        | productos       |       20000 |                 0 |       0.00
  lab        | pedidos         |       20000 |                 0 |       0.00
 (10 rows)
+
 ```
 
+# Escenario : Interrupcion de  orquestador y hijo
 
-
-
-
-
-# Escenario : Interrupcion de  orquestador y hijo 
 en este ejemplo mostraremos que pasa si se cae un orquestador y alguno de sus hijos   se quedan en estatus RUNNING pero algunos hijos si alcanzaron a finalizar,
-primero cambiamos el panorama para simular este escenario 
+primero cambiamos el panorama para simular este escenario
+
 ```SQL
 update maint.jobs set status = 'RUNNING'  where job_id = 1 ;
 update maint.analyze_tasks set status = 'RUNNING'  where task_id = 2 ;
+
 ```
 
+### Validamos los resultados
 
-### Validamos los resultados 
-```
+```sql
 select * FROM maint.jobs where started_at::date = current_date  and job_id = 1   ;
 select * FROM maint.analyze_tasks  where started_at::date = current_date and job_id = 1 order by task_id ;
+
 ```
 
 **Salida esperada**
+
 ```
 -[ RECORD 1 ]------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 job_id             | 1
 job_type           | SMART_USER_NORMAL
 maintenance_action | ANALYZE
 orchestrator_pid   | 855252
-execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "min_rows": 1000, "force_rows": 50000, "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "parallel_workers": 4}
+execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "min_mod_tuples": 1000, "parallel_workers": 4, "force_mod_tuples": 50000}
 status             | RUNNING
 tables_processed   | 2
 started_at         | 2026-08-25 20:49:59.110391+00
@@ -391,8 +420,8 @@ task_id         | 1
 job_id          | 1
 schema_name     | lab
 table_name      | sesiones
-total_filas     | 20000
-filas_afectadas | 18000
+live_tuples     | 20000
+modified_tuples | 18000
 drift_pct       | 90.00
 status          | SUCCESS
 child_pid       | 878786
@@ -405,8 +434,8 @@ task_id         | 2
 job_id          | 1
 schema_name     | lab
 table_name      | carritos
-total_filas     | 10000
-filas_afectadas | 10000
+live_tuples     | 10000
+modified_tuples | 10000
 drift_pct       | 100.00
 status          | RUNNING
 child_pid       | 878787
@@ -415,27 +444,30 @@ started_at      | 2026-08-25 20:49:59.122408+00
 ended_at        | 2026-08-25 20:50:00.129525+00
 error_log       |
 
+
 ```
-
-
-
 
 ### ejecutamos una tarea de vacuum.
-aqui el siguiente orquestador debe revisar los PID quedaron orquestadores con estatus running y hijos , 
-```
+
+aqui el siguiente orquestador debe revisar los PID quedaron orquestadores con estatus running y hijos ,
+
+```sql
   CALL maint.sp_orchestrate_analyze(
       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 5,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_chg_rows         => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_chg_rows       => 3000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de filas (NULL para desactivar)
+      p_threshold_pct    => 5,                  -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_mod_tuples   => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 3000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
+
 ```
+
 **Salida esperada**
+
 ```
 NOTICE:  [SELF-HEALING] Job 1 detectado como huérfano. Estado actualizado a ABORTED_ORPHAN.
 NOTICE:  [SELF-HEALING] Se auto-sanaron y cerraron 1 trabajo(s) huérfano(s) en maint.jobs.
@@ -451,22 +483,27 @@ INFO:  [✓] ORQUESTACION FINALIZADA. Job 5 | Tablas procesadas: 0 / 0 (Sistema 
 INFO:  Tiempo Total: 00:00:00.008835
 INFO:  =========================================================
 CALL
+
 ```
 
-### Validamos los resultados 
+### Validamos los resultados
+
 aqui unicamente cambiara el estatus aquellos orquestadores que no estan en pg_stat_activy y estan en estatus running o pending los que estan en  SUCCESS no los revisa y no los mueve.
-```
+
+```sql
 select * FROM maint.jobs where started_at::date = current_date  and job_id = 1   ;
 select * FROM maint.analyze_tasks  where started_at::date = current_date and job_id = 1 order by task_id ;
+
 ```
 
 **Salida esperada**
+
 ```
 job_id             | 1
 job_type           | SMART_USER_NORMAL
 maintenance_action | ANALYZE
 orchestrator_pid   | 855252
-execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "min_rows": 1000, "force_rows": 50000, "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "parallel_workers": 4}
+execution_params   | {"scope": "SMART_USER", "profile": "NORMAL", "cutoff_time": null, "keep_history": true, "threshold_pct": 51, "min_mod_tuples": 1000, "parallel_workers": 4, "force_mod_tuples": 50000}
 status             | ABORTED_ORPHAN
 tables_processed   | 1
 started_at         | 2026-08-25 20:49:59.110391+00
@@ -477,8 +514,8 @@ task_id         | 1
 job_id          | 1
 schema_name     | lab
 table_name      | sesiones
-total_filas     | 20000
-filas_afectadas | 18000
+live_tuples     | 20000
+modified_tuples | 18000
 drift_pct       | 90.00
 status          | SUCCESS
 child_pid       | 878786
@@ -491,8 +528,8 @@ task_id         | 2
 job_id          | 1
 schema_name     | lab
 table_name      | carritos
-total_filas     | 10000
-filas_afectadas | 10000
+live_tuples     | 10000
+modified_tuples | 10000
 drift_pct       | 100.00
 status          | ABORTED_ORPHAN
 child_pid       | 878787
@@ -501,20 +538,12 @@ started_at      | 2026-08-25 20:49:59.122408+00
 ended_at        | 2026-08-25 21:05:53.455716+00
 error_log       | Orchestrator process died or was superseded.
 
+
 ```
 
- 
-
-
-
-
-
-
-
-
 ---
+
 # Monitorear
- 
 
 ### 1. MONITOREO EN VIVO DESDE `pg_stat_activity`
 
@@ -534,9 +563,9 @@ WHERE (backend_type = 'pg_background' OR query ILIKE '%sp_orchestrate_analyze%')
   AND pid <> pg_backend_pid()
 ORDER BY query_start ASC;
 
+
 ```
 
- 
 ---
 
 ### 2. MONITOREO FORENSE DESDE `maint.analyze_tasks`
@@ -549,8 +578,8 @@ SELECT
     j.job_type,
     j.maintenance_action AS accion,
     t.schema_name || '.' || t.table_name AS tabla_objetivo,
-    t.total_filas,
-    t.filas_afectadas,
+    t.live_tuples,
+    t.modified_tuples,
     t.drift_pct AS porcentaje_desfase,
     t.status AS estatus_tarea,
     t.child_pid,
@@ -574,4 +603,6 @@ ORDER BY schema_name, table_name, stage_number;
 select * from maint.jobs;
 select * from maint.analyze_tasks;
 
+
 ```
+ 
