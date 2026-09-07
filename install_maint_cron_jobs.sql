@@ -48,7 +48,7 @@ SELECT cron.schedule_in_database(
         p_scope             => 'SMART_USER',     -- Alcance: Evalúa las tablas de usuario con inteligencia
         p_profile           => 'BALANCED',       -- Perfil: Balance ideal entre limpieza e I/O
         p_parallel_workers => 4,                -- Concurrencia: 4 hilos para barrido rápido en segundo plano
-        p_cutoff_time       => '05:00:00'::TIME, -- Freno de emergencia: Detener si llega a las 05:00 AM
+        p_cutoff_time       => '06:00:00'::TIME, -- Freno de emergencia: Detener si llega a las 05:00 AM
         p_verbose           => FALSE,            -- Diagnóstico: Desactivado para ejecución silenciosa en Cron
         
         -- UMBRALES INTERMEDIO-CRÍTICO (Tranquilo/Bajo para barrido diario):
