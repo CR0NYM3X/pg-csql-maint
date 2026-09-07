@@ -171,10 +171,10 @@ SELECT cron.schedule_in_database(
         p_frag_pct_threshold  => 40.00,            -- Tolerancia de Fragmentación Foliar: Hasta 40%
         p_bloat_pct_threshold => 20.00,            -- Tolerancia de Bloat (Espacio Vacío): Hasta 20%
         p_bloat_mb_threshold  => 1024.00,          -- Tolerancia Absoluta: 1 GB (1024 MB) de basura en el índice
-        p_threshold_operator  => 'OR',             -- Condición: Si rompe CUALQUIERA de las 2 reglas de bloat/MB
+        p_threshold_operator  => 'AND',             -- Condición: Si rompe CUALQUIERA de las 2 reglas de bloat/MB
         p_min_index_mb        => 10.00,            -- Descartar evaluación de índices menores a 10 MB
-        p_force_frag_pct      => NULL,             -- Bypass directo de fragmentación (Desactivado)
-        p_force_bloat_mb      => NULL,             -- Bypass directo de Bloat MB (Desactivado)
+        p_force_frag_pct      => 60.00,             -- Bypass directo de fragmentación (Desactivado)
+        p_force_bloat_mb      => 20480.00,             -- Bypass directo de Bloat MB (Desactivado)
         
         p_rebuild_invalid     => TRUE,             -- Zombis: Reconstrucción forzada y prioritaria de índices caídos
         p_keep_history        => TRUE              -- Auditoría: Conservar historial forense
