@@ -144,15 +144,16 @@ ON CONFLICT (name) DO NOTHING;
 * **Solución de Ingeniería:** Calcular el espacio libre real de la partición de datos y restarle el margen de seguridad requerido antes de autorizar el despacho de la tarea.
 * **Fórmula Operativa de Validación:**
 
-$$\text{Espacio Requerido} = (\text{Tamaño Físico de la Tabla}) + (\text{Estimación de Generación WAL}) + \text{Margen de Seguridad (ej. 10 GB)}$$
+<BR> **(Espacio Libre Disponible - Espacio Requerido) < Margen de Seguridad Base (10 GB)** <BR> 
 
 
-$$\text{Espacio Libre Disponible} = (\text{Tamaño Disco Configurado en } \texttt{instance\_config}) - (\text{Espacio Consumido por todas las DBs})$$
+
+<br>**Espacio Libre Disponible = (Tamaño Disco Configurado en instance_config) - (Espacio Consumido por todas las DBs)**<br>
 
 
 * **Regla de Despacho:**
 
-$$\text{Si } (\text{Espacio Libre Disponible} - \text{Espacio Requerido}) < \text{Margen de Seguridad Base (10 GB)} \longrightarrow \text{\textbf{SALTAR TAREA}}$$
+
 
 
 
