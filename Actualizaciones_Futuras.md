@@ -230,6 +230,52 @@ SELECT cron.schedule(
 ---
 
 
+
+### **8. Reestructuración Lógica del Módulo REINDEX (`p_force_frag_pct` + Triada `AND`)**
+
+*Por: Pedro (Desarrollo Core), Marcos (Arquitectura) y Rodrigo (Technical Gatekeeper)*
+
+* **Problema Identificado:** En la versión anterior, la evaluación del porcentaje de fragmentación base (`p_frag_pct_threshold`) quedaba unida mediante un operador `OR` exterior en todas las ramas de ejecución. Esto provocaba que cualquier índice que superara el umbral base entrara incondicionalmente al proceso, anulando la utilidad técnica del parámetro de bypass `p_force_frag_pct` e impidiendo realizar ejecuciones con una regla `'AND'` estricta sobre la fragmentación y el bloat.
+* **Solución de Ingeniería:** Rediseñar la expresión condicional dentro de `maint.sp_pgstatindex` y `maint.sp_orchestrate_reindex` para vincular las tres variables normales (`Fragmentación`, `% Bloat`, `MB Bloat`) al operador de control `p_threshold_operator`. De esta manera, el parámetro `p_force_frag_pct` se preserva y recupera su función de **salida de emergencia (Bypass de Fuerza Bruta)** ante daños estructurales foliares graves.
+* **Reglas de Evaluación Rediseñadas (Versión V4.0.0 / V3.5.0):**
+1. **Vía Bypass (Fuerza Bruta):** Si la fragmentación foliar alcanza `p_force_frag_pct` (ej. 85%) o el bloat alcanza `p_force_bloat_mb` (ej. 10 GB), el índice se inyecta en la cola de trabajo inmediatamente, ignorando el resto de las reglas.
+2. **Vía `'AND'` Estricto:** Si `p_threshold_operator = 'AND'`, el índice solo se procesa si cumple las 3 condiciones al mismo tiempo:
+* **Fragmentación** >= `p_frag_pct_threshold` **AND** **Bloat %** >= `p_bloat_pct_threshold` **AND** **Bloat MB** >= `p_bloat_mb_threshold`
+
+
+3. **Vía `'OR'` Flexible:** Si `p_threshold_operator = 'OR'`, el índice entra a la cola si cumple cualquiera de las 3 condiciones individuales.
+
+
+* **Ajuste del Condicional en PL/pgSQL:**
+
+```sql
+-- EVALUACIÓN MATEMÁTICA RESTRUCTURADA (Fase de Triage REINDEX)
+IF (p_force_frag_pct IS NOT NULL AND v_leaf_frag >= p_force_frag_pct) 
+   OR (v_force_bloat_kb IS NOT NULL AND v_est_bloat_kb >= v_force_bloat_kb) THEN
+    -- Vía 1: Bypass de Fuerza Bruta (Garantiza el rescate de índices destruidos)
+    v_requieres_reindex := TRUE;
+ELSIF v_op_upper = 'AND' THEN
+    -- Vía 2: Regla AND Estricta que vincula las 3 variables
+    v_requieres_reindex := (
+        v_leaf_frag >= p_frag_pct_threshold 
+        AND v_total_bloat_pct >= p_bloat_pct_threshold 
+        AND v_est_bloat_kb >= v_threshold_kb
+    );
+ELSE
+    -- Vía 3: Regla OR Flexible
+    v_requieres_reindex := (
+        v_leaf_frag >= p_frag_pct_threshold 
+        OR v_total_bloat_pct >= p_bloat_pct_threshold 
+        OR v_est_bloat_kb >= v_threshold_kb
+    );
+END IF;
+
+```
+
+* **Impacto:** Permite configurar ventanas de mantenimiento altamente conservadoras mediante la regla `'AND'` para no saturar I/O en horas pico, manteniendo `p_force_frag_pct` como una válvula de rescate automática y simétrica para índices pequeños pero severamente fragmentados.
+
+
+
 ## ** MATRIZ CONSOLIDADA DE LA PROPUESTA (VERSIÓN V4.0.0)**
 
 ```
@@ -246,6 +292,7 @@ SELECT cron.schedule(
 │ Alertamiento             │ NOTIFY 'maint_alerts' (JSON Payload)      │ Integración Slack / PagerDuty   │
 │ Auditoría                │ Purga a maint.analyze_tasks_archive       │ Preserva inmutabilidad histórica│
 │ Arquitectura de Ciclos   │ Single-pass dispatcher reinvocado pg_cron │ Resiliencia nativa en la Nube   │
+│ Reindex Triada AND       │ p_force_frag_pct + Triada AND Estricta    │ Rescue Bypass + Control I/O     │
 └──────────────────────────┴───────────────────────────────────────────┴─────────────────────────────────┤
 
 ```
