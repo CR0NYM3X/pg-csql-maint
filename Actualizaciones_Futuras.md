@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS maint.filters (
 
 ---
 
-### **3. Retry Automático Diferenciado por Anomalía**
+## **3. Retry Automático Diferenciado por Anomalía**
 
 *Por: Lucas (Integración & Sistemas Distribuidos) y Diego (Seguridad de Datos)*
 
@@ -108,7 +108,7 @@ EXCEPTION WHEN OTHERS THEN
 
 ---
 
-### **4. Parametrización Dinámica de Paralelismo (`maint.instance_config`)**
+## **4. Parametrización Dinámica de Paralelismo (`maint.instance_config`)**
 
 *Por: Marcos (Arquitectura) y Samuel (S.O. Linux)*
 
@@ -136,7 +136,7 @@ ON CONFLICT (name) DO NOTHING;
 
 ---
 
-### **5. Pre-validación de Espacio en Disco antes del Despacho (Seguridad para `VACUUM FULL` / `REINDEX`)**
+## **5. Pre-validación de Espacio en Disco antes del Despacho (Seguridad para `VACUUM FULL` / `REINDEX`)**
 
 *Por: Héctor (Respaldos/DRP) y Javier (Alta Disponibilidad)*
 
@@ -161,7 +161,7 @@ La tarea se marca como `SKIPPED_INSUFFICIENT_DISK_SPACE` con log explicativo, pr
 
 ---
 
-### **6. Alertamiento Activo vía `NOTIFY` (Integración Externa)**
+## **6. Alertamiento Activo vía `NOTIFY` (Integración Externa)**
 
 *Por: Lucas (Integración & Sistemas Distribuidos)*
 
@@ -188,7 +188,7 @@ PERFORM pg_notify(
 
 ---
 
-### **7. Política de Preservación de Historial (`p_keep_history`)**
+## **7. Política de Preservación de Historial (`p_keep_history`)**
 
 *Por: Mauricio (QA & Gobierno) y Diego (Seguridad de Datos)*
 
@@ -231,7 +231,7 @@ SELECT cron.schedule(
 
 
 
-### **8. Reestructuración Lógica del Módulo REINDEX (`p_force_frag_pct` + Triada `AND`)**
+## **8. Reestructuración Lógica del Módulo REINDEX (`p_force_frag_pct` + Triada `AND`)**
 
 *Por: Pedro (Desarrollo Core), Marcos (Arquitectura) y Rodrigo (Technical Gatekeeper)*
 
