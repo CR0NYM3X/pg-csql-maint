@@ -144,17 +144,13 @@ ON CONFLICT (name) DO NOTHING;
 * **Solución de Ingeniería:** Calcular el espacio libre real de la partición de datos y restarle el margen de seguridad requerido antes de autorizar el despacho de la tarea.
 * **Fórmula Operativa de Validación:**
 
-<BR> **(Espacio Libre Disponible - Espacio Requerido) < Margen de Seguridad Base (10 GB)** <BR> 
-
-
-
-<br>**Espacio Libre Disponible = (Tamaño Disco Configurado en instance_config) - (Espacio Consumido por todas las DBs)**<br>
-
-
+ 
 * **Regla de Despacho:**
+```
 
-
-
+validacion que debe realizar para poder hacer un vacuum full 
+( ( ( ( 600 [Espacio de disco] - 250 [tamaño de base de datos] = 350 )  - 150 [Espacio solicitado por cada vacuumfull] )  = 200 ) >= 30 [GB Margen de seguridad] ) = TRUE 
+```
 
 
 La tarea se marca como `SKIPPED_INSUFFICIENT_DISK_SPACE` con log explicativo, protegiendo la base de datos de un crash por falta de espacio.
