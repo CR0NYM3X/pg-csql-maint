@@ -149,7 +149,7 @@ ON CONFLICT (name) DO NOTHING;
 ```
 
 validacion que debe realizar para poder hacer un vacuum full 
-( ( ( ( 600 [Espacio de disco] - 250 [tamaño de base de datos] = 350 )  - 150 [Espacio solicitado por cada vacuumfull] )  = 200 ) >= 30 [GB Margen de seguridad] ) = TRUE 
+( ( ( ( ( 600 [Espacio de disco] - 250 [tamaño de base de datos] = 350 )  - 150 [Espacio solicitado por cada vacuumfull] )  = 200 ) * 2 [WAL] ) >= 30 [GB Margen de seguridad] ) = TRUE 
 ```
 
 
