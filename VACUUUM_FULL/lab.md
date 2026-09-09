@@ -551,6 +551,35 @@ error_log          | SKIPPED: Insufficient disk space for lab.demo_extreme_bloat
 ```
 
 
+update maint.instance_config set setting = '1000' where name = 'disk_total_size_gb';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
