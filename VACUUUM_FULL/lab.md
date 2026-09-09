@@ -10,6 +10,7 @@ CREATE DATABASE db_mantos;
 -- ====================================================================================
 -- DBA SQUAD: VANGUARD BLACK-OPS | SIMULADOR DE ESTRÉS PARA VACUUM FULL V3.4
 -- ====================================================================================
+-- DROP SCHEMA lab;
 CREATE SCHEMA IF NOT EXISTS lab;
 
 -- 1. Limpieza Total del Entorno
@@ -83,8 +84,29 @@ INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenanc
 
 ```
 
----
 
+
+### Validar el espacio total de las db
+```
+SELECT 
+    pg_catalog.pg_size_pretty( sum(pg_catalog.pg_database_size(d.datname) ) ) AS tamaño_legible
+FROM pg_catalog.pg_database d;
+```
+**Salida esperada**
+```
+ tamaño_legible 
+----------------
+ 303 GB
+(1 row)
+```
+
+
+
+
+
+
+
+---
 ### 🔍 REVISIÓN DE FILTROS Y ESTADO PREVIO A LA CIRUGÍA
 
 #### Consulta A: Filtros Registrados
@@ -148,10 +170,10 @@ ORDER BY pg_relation_size(c.oid) DESC;
 ```text
  schema_name |      table_name       | table_oid | old_relfilenode | total_size | has_had_vf 
 -------------+-----------------------+-----------+-----------------+------------+------------
- lab         | demo_extreme_bloat    |   1804959 |         1804959 | 260 MB     | f
- lab         | demo_heavy_updates    |   1804968 |         1804968 | 15 MB      | f
- lab         | demo_escudo_historial |   1804986 |         1804986 | 4712 kB    | f
- lab         | demo_vip_facturas     |   1804977 |         1804977 | 2552 kB    | f
+ lab         | demo_extreme_bloat    |   1842178 |         1842178 | 25 GB      | f
+ lab         | demo_heavy_updates    |   1842187 |         1842187 | 15 MB      | f
+ lab         | demo_escudo_historial |   1842205 |         1842205 | 4712 kB    | f
+ lab         | demo_vip_facturas     |   1842196 |         1842196 | 2552 kB    | f
 (4 rows)
 
 ```
@@ -192,17 +214,19 @@ ORDER BY total_bloat_pct DESC;
 **Salida esperada**
 
 ```text
- schema_name |      table_name       | total_mb | scan_mb | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb | free_pct | total_bloat_pct 
--------------+-----------------------+----------+---------+-------------+-------------+---------+----------+-------------+---------+----------+---------+----------+-----------------
- lab         | demo_extreme_bloat    |   260.42 |  260.42 |        0.00 |       29981 |   26.14 |    10.04 |           0 |    0.00 |     0.00 |  234.28 |    89.96 |            89.96
- lab         | demo_escudo_historial |     4.60 |    4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |    2.29 |    49.87 |            49.87
- lab         | demo_heavy_updates    |    14.93 |   14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |    7.44 |    49.81 |            49.81
- lab         | demo_vip_facturas     |     2.49 |    2.49 |        0.00 |       40000 |    1.99 |    79.96 |           0 |    0.00 |     0.00 |    0.50 |    20.04 |            20.04
+ schema_name |      table_name       | total_mb | scan_mb  | scanned_pct | live_tuples | live_mb | live_pct | dead_tuples | dead_mb | dead_pct | free_mb  | free_pct | total_bloat_pct 
+-------------+-----------------------+----------+----------+-------------+-------------+---------+----------+-------------+---------+----------+----------+----------+-----------------
+ lab         | demo_extreme_bloat    | 26041.67 | 26041.67 |        0.00 |     3000445 | 2614.34 |    10.04 |           0 |    0.00 |     0.00 | 23427.33 |    89.96 |           89.96
+ lab         | demo_escudo_historial |     4.60 |     4.60 |        0.00 |       40001 |    2.31 |    50.13 |           0 |    0.00 |     0.00 |     2.29 |    49.87 |           49.87
+ lab         | demo_heavy_updates    |    14.93 |    14.93 |        0.00 |      150000 |    7.49 |    50.19 |           0 |    0.00 |     0.00 |     7.44 |    49.81 |           49.81
+ lab         | demo_vip_facturas     |     2.49 |     2.49 |        0.00 |       40000 |    1.99 |    79.96 |           0 |    0.00 |     0.00 |     0.50 |    20.04 |           20.04
 (4 rows)
 
 ```
 
 ---
+
+
 
 ### 🧪 ESCENARIOS DE EVALUACIÓN Y EJECUCIÓN
 
@@ -223,7 +247,6 @@ CALL maint.sp_pgstattuple(
     p_enable_deep_scan    => FALSE,        -- Escaneo bloque a bloque (FALSE = Aprox rápido)
     p_verbose             => TRUE          -- Diagnóstico visual en consola
 );
-
 
 ```
 
@@ -442,6 +465,95 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
 
 ```
 
+
+
+### Colocar un tamaño de disco chico para que marque el error al hacer el mantenimiento
+Esto provocara que salte el mensaje de que no hay espacio en disco  , ya que todas base de datos pesan 303GB y esto 
+```
+update maint.instance_config set setting  = '200' where name  = 'disk_total_size_gb';
+select name,setting,unit from maint.instance_config;
+```
+**Salida esperada**
+```
+UPDATE 1
+               name               | setting |  unit   
+----------------------------------+---------+---------
+ max_parallel_vacuum_full_workers | 2       | workers
+ disk_safety_margin_gb            | 30      | GB
+ wal_amplification_factor         | 2.0     | ratio
+ target_databases_for_disk_check  | -1      | text
+ disk_total_size_gb               | 10      | GB
+(5 rows)
+```
+
+
+### Ejecutamos el orquestador 
+```sql
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'SMART_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         => NULL,
+    p_kill_active_on_cutoff => FALSE,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 50.00,
+    p_bloat_mb_threshold  => 50.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => NULL,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+
+SELECT * FROM maint.vacuum_full_tasks;
+
+```
+
+**Salida Esperada:**
+```text
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.9 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 3
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0 - EXT: 1.4)
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | KILL_CUTOFF: f | FORCE_MB: DESACTIVADO
+INFO:  PRE-VALIDACIÓN DISCO: 303 GB | MARGEN: 30 GB | WAL_FACTOR: 2.0 | TARGET_DBS: -1
+INFO:  =========================================================
+WARNING:      [X] DISK SHIELD (OMITIDO): lab.demo_extreme_bloat | Formula: ((Heap: 2.55 GB + Index: 0.63 GB) * WAL: 2.0) = 6.36 GB Req. | Disponible tras op: -6.33 GB
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 5 | Procesadas: 0 / 1
+INFO:  Tiempo Total: 00:00:02.279276
+INFO:  =========================================================
+CALL
+
+ 
+-[ RECORD 1 ]------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+task_id            | 1
+job_id             | 5
+schema_name        | lab
+table_name         | demo_extreme_bloat
+bloat_pct          | 89.96
+bloat_kb           | 23989588.69
+sustained_days_met | 5
+old_relfilenode    | 
+new_relfilenode    | 
+status             | SKIPPED_INSUFFICIENT_DISK_SPACE
+child_pid          | 
+child_cookie       | 
+started_at         | 
+ended_at           | 2026-09-09 11:29:56.535505-07
+error_log          | SKIPPED: Insufficient disk space for lab.demo_extreme_bloat. Peak required (Heap+Indexes+WAL): 6.36 GB. Available after operation: -6.33 GB. Required safety margin: 30.00 GB. Checked DBs: ALL (-1).
+
+
+```
+
+
+
+
+
 ---
 
 ### 📍 ESCENARIO 2: MANTENIMIENTO SMART CON HISTORIAL Y VERIFICACIÓN FÍSICA
@@ -490,8 +602,6 @@ INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 3 | Procesadas: 1 / 1
 INFO:  Tiempo Total: 00:00:02.029293
 INFO:  =========================================================
 CALL
-
-
 ```
 
 ---
