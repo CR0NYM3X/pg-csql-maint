@@ -729,8 +729,14 @@ BEGIN
                         COMMIT;
 
                         IF p_verbose THEN 
-                            RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.%. Requiere: % GB. Disponible tras op: % GB. Ámbito DB: %', 
-                                          v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2), v_target_dbs_setting; 
+                              RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.% | Formula: ((Heap: % GB + Index: % GB) * WAL: %) = % GB Req. | Disponible tras op: % GB', 
+                                          v_schema, 
+                                          v_table, 
+                                          ROUND(v_new_heap_gb, 2),
+                                          ROUND(v_max_indexes_gb, 2),
+                                          ROUND(v_wal_amplification_factor, 1),
+                                          ROUND(v_peak_required_gb, 2), 
+                                          ROUND(v_free_disk_gb - v_peak_required_gb, 2);                           
                         END IF;
 
                         v_pending_tasks := v_pending_tasks - 1;
