@@ -107,7 +107,7 @@ ON CONFLICT (name) DO NOTHING;
  ├─► v_max_indexes_gb = pg_indexes_size() / 1024 / 1024 / 1024 =  2.00 GB
  │
  ├─► v_peak_required_gb = (10.00 GB + 2.00 GB) * 2.0 (WAL)    = 24.00 GB
- ├─► v_db_size_gb       = pg_database_size() / 1024^3          = 250.00 GB
+ ├─► v_db_size_gb       = dbs          = 250.00 GB
  ├─► v_free_disk_gb     = 600.00 GB - 250.00 GB                = 350.00 GB
            │
            ▼
@@ -152,4 +152,15 @@ ON CONFLICT (name) DO NOTHING;
 ¿Confirmas que la simulación es correcta para proceder con la entrega de los artefactos de código SQL/PLpgSQL?"
 
 
+ 
+###  El Análisis del Parámetro `target_databases_for_disk_check`
+ 
+
+* **La Propuesta del Cliente:**
+Nueva clave en `maint.instance_config` (ej. `target_databases_for_disk_check`) que acepte una lista separada por comas de bases de datos a sumar para calcular el consumo total de espacio en el disco.
+* Si el valor es **`'-1'`**: Suma el tamaño de **TODAS** las bases de datos de la instancia (`SELECT SUM(pg_database_size(datname)) FROM pg_database`).
+* Si el valor es **`'current_database'`**: Suma únicamente la base de datos donde se ejecuta la cirugía (`pg_database_size(current_database())`).
+* Si el valor es una lista (ej. `'db1, db2, db3'` o `'db_ventas, db_mantos'`): Normaliza el texto (limpia espacios en blanco), parsea la lista y suma únicamente el tamaño de esas bases de datos específicas.
+
+ 
 
