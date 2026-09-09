@@ -38,9 +38,9 @@ ALTER TABLE lab.demo_escudo_historial SET (autovacuum_enabled = false);
 -- Inserción de 300,000 filas pesadas. Borramos el 90% y aplicamos VACUUM normal.
 -- Esto deja la tabla llena de "Espacio Libre Físico" en disco que solo recupera VACUUM FULL.
 INSERT INTO lab.demo_extreme_bloat(payload, status) 
-SELECT repeat('A', 800), 'PROCESADO' FROM generate_series(1, 300000) g;
+SELECT repeat('A', 800), 'PROCESADO' FROM generate_series(1, 30000000) g;
 
-DELETE FROM lab.demo_extreme_bloat WHERE id % 10 != 0; -- Borra 270,000 filas
+DELETE FROM lab.demo_extreme_bloat WHERE id % 10 != 0; 
 
 
 -- [CASO B] TABLA DE REESCRITURA PENDIENTE: Objetivo -> SMART con Historial
