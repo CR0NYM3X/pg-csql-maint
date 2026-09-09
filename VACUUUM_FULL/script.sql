@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (VACUUM FULL)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: V3.5.0 (Grado Diamante - relfilenode Checksum, Disk Shield & Universal Binding)
+   VERSIÓN: V3.6.0 (Grado Diamante - relfilenode Checksum, Multi-DB Disk Shield & Universal Binding)
    ARQUITECTURA: Multi-hilo Dinámico, Resiliente, Forense, Pesimista Estricto.
 ========================================================================================= */
 BEGIN;
@@ -23,7 +23,7 @@ CREATE EXTENSION IF NOT EXISTS pgstattuple;
 CREATE EXTENSION IF NOT EXISTS pg_background;
 
 -- =========================================================================================
--- [NUEVO] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA (V3.5.0)
+-- [NUEVO V3.6.0] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.instance_config (
     config_id SERIAL PRIMARY KEY,
@@ -34,16 +34,17 @@ CREATE TABLE IF NOT EXISTS maint.instance_config (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
--- Inserción idempotente de parámetros operativos e interruptores de seguridad
+-- Inserción idempotente de parámetros operativos, ámbito Multi-DB e interruptores de seguridad
 INSERT INTO maint.instance_config (name, setting, unit, setting_desc) 
 VALUES 
   ('max_parallel_vacuum_full_workers', '2', 'workers', 'Límite máximo dinámico de workers concurrentes para cirugías'),
   ('disk_total_size_gb', '-1', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
   ('disk_safety_margin_gb', '30', 'GB', 'Margen de seguridad intocable en disco (Techo de Acero)'),
-  ('wal_amplification_factor', '2.0', 'ratio', 'Factor de amplificación WAL (2.0 GCP/On-Premise, 1.0 Aurora/Decoupled)')
+  ('wal_amplification_factor', '2.0', 'ratio', 'Factor de amplificación WAL (2.0 GCP/On-Premise, 1.0 Aurora/Decoupled)'),
+  ('target_databases_for_disk_check', '-1', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)')
 ON CONFLICT (name) DO NOTHING;
 
-COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers y Seguridad en Disco.';
+COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
@@ -300,7 +301,7 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 
 -- =========================================================================================
--- 7. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_vacuum_full (V3.5.0 Polimórfico Universal)
+-- 7. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_vacuum_full (V3.6.0 Multi-DB Universal)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
     p_scope                 VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
@@ -341,11 +342,13 @@ DECLARE
     v_is_v2 BOOLEAN := FALSE;
     v_ext_version TEXT;
 
-    -- [NUEVO V3.5.0]: Variables Dinámicas y Pre-validación de Espacio en Disco (Techo de Acero Pesimista)
+    -- [NUEVO V3.6.0]: Variables Dinámicas, Ámbito Multi-DB y Pre-validación de Espacio en Disco
     v_max_allowed_workers INT;
     v_disk_total_size_gb NUMERIC;
     v_disk_safety_margin_gb NUMERIC;
     v_wal_amplification_factor NUMERIC;
+    v_target_dbs_setting TEXT;
+    v_target_dbs_array TEXT[];
     v_table_oid OID;
     v_approx_tuple_len BIGINT;
     v_new_heap_gb NUMERIC;
@@ -363,11 +366,12 @@ BEGIN
         v_is_v2 := TRUE;
     END IF;
 
-    -- 0.1 Lectura de Configuración de Instancia (V3.5.0)
+    -- 0.1 Lectura de Configuración de Instancia Multi-DB (V3.6.0)
     SELECT setting::INT INTO v_max_allowed_workers FROM maint.instance_config WHERE name = 'max_parallel_vacuum_full_workers';
     SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.instance_config WHERE name = 'disk_total_size_gb';
     SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.instance_config WHERE name = 'disk_safety_margin_gb';
     SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.instance_config WHERE name = 'wal_amplification_factor';
+    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.instance_config WHERE name = 'target_databases_for_disk_check';
 
     -- Pre-flight checks
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN
@@ -379,7 +383,7 @@ BEGIN
                         current_setting('max_worker_processes'), p_parallel_workers;
     END IF;
 
-    -- [NUEVO V3.5.0]: Validación Dinámica de Paralelismo
+    -- [NUEVO V3.6.0]: Validación Dinámica de Paralelismo
     IF p_parallel_workers < 1 OR p_parallel_workers > v_max_allowed_workers THEN
         RAISE EXCEPTION 'ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados % hilos para VACUUM FULL. El tope estricto configurado en maint.instance_config es %.', p_parallel_workers, v_max_allowed_workers;
     END IF;
@@ -449,11 +453,12 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.5.0 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
         RAISE INFO 'ALCANCE: % | MODO: % | HILOS: % | CUTOFF: % | KILL_CUTOFF: % | FORCE_MB: %', 
                    p_scope, v_profile_upper, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_kill_active_on_cutoff, COALESCE(p_force_bloat_mb::TEXT, 'DESACTIVADO');
-        RAISE INFO 'PRE-VALIDACIÓN DISCO: % GB | MARGEN: % GB | WAL_FACTOR: %', 
-                   CASE WHEN v_disk_total_size_gb <= 0 THEN 'DESACTIVADO (-1)' ELSE v_disk_total_size_gb::TEXT END, v_disk_safety_margin_gb, v_wal_amplification_factor;
+        RAISE INFO 'PRE-VALIDACIÓN DISCO: % GB | MARGEN: % GB | WAL_FACTOR: % | TARGET_DBS: %', 
+                   CASE WHEN v_disk_total_size_gb <= 0 THEN 'DESACTIVADO (-1)' ELSE v_disk_total_size_gb::TEXT END, 
+                   v_disk_safety_margin_gb, v_wal_amplification_factor, v_target_dbs_setting;
         RAISE INFO '=========================================================';
     END IF;
 
@@ -475,7 +480,8 @@ BEGIN
         'pg_background_version', COALESCE(v_ext_version, '1.x'),
         'disk_total_size_gb', v_disk_total_size_gb,
         'disk_safety_margin_gb', v_disk_safety_margin_gb,
-        'wal_amplification_factor', v_wal_amplification_factor
+        'wal_amplification_factor', v_wal_amplification_factor,
+        'target_databases_for_disk_check', v_target_dbs_setting
     );
 
     INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
@@ -677,10 +683,10 @@ BEGIN
                 WHERE n.nspname = v_schema AND c.relname = v_table;
 
                 -- =====================================================================================
-                -- [NUEVO V3.5.0] PRE-VALIDACIÓN DE ESPACIO EN DISCO (TECHO DE ACERO PESIMISTA)
+                -- [NUEVO V3.6.0] PRE-VALIDACIÓN MULTI-DB DE ESPACIO EN DISCO (TECHO DE ACERO PESIMISTA)
                 -- =====================================================================================
                 IF v_disk_total_size_gb > 0 THEN
-                    -- Extraer tamaño real de tuplas vivas registradas en Triage de hoy
+                    -- 1. Extraer tamaño real de tuplas vivas registradas en Triage de hoy
                     SELECT CASE WHEN deep_scanned THEN deep_tuple_len ELSE approx_tuple_len END INTO v_approx_tuple_len
                     FROM maint.pgstattuple
                     WHERE evaluation_date = CURRENT_DATE AND schema_name = v_schema AND table_name = v_table;
@@ -688,22 +694,43 @@ BEGIN
                     v_new_heap_gb      := COALESCE(v_approx_tuple_len, 0) / (1024.0 * 1024.0 * 1024.0);
                     v_max_indexes_gb   := pg_indexes_size(v_table_oid) / (1024.0 * 1024.0 * 1024.0);
                     v_peak_required_gb := (v_new_heap_gb + v_max_indexes_gb) * v_wal_amplification_factor;
-                    v_db_size_gb       := pg_database_size(current_database()) / (1024.0 * 1024.0 * 1024.0);
-                    v_free_disk_gb     := v_disk_total_size_gb - v_db_size_gb;
 
-                    -- Validación contra el margen de seguridad
+                    -- 2. Cálculo dinámico de ocupación de bases de datos según configuración target_databases_for_disk_check
+                    IF TRIM(v_target_dbs_setting) = '-1' THEN
+                        -- Modo -1: Suma el tamaño de TODAS las bases de datos conectables de la instancia
+                        SELECT COALESCE(SUM(pg_database_size(oid)), 0) / (1024.0 * 1024.0 * 1024.0) 
+                        INTO v_db_size_gb 
+                        FROM pg_database 
+                        WHERE datallowconn = TRUE;
+                    ELSIF LOWER(TRIM(v_target_dbs_setting)) = 'current_database' THEN
+                        -- Modo current_database: Evalúa únicamente la base de datos actual
+                        v_db_size_gb := pg_database_size(current_database()) / (1024.0 * 1024.0 * 1024.0);
+                    ELSE
+                        -- Modo Lista Explicita: Parsea la lista separada por comas y sanitiza espacios
+                        SELECT array_agg(TRIM(db_name)) INTO v_target_dbs_array
+                        FROM unnest(string_to_array(v_target_dbs_setting, ',')) AS db_name;
+
+                        SELECT COALESCE(SUM(pg_database_size(datname)), 0) / (1024.0 * 1024.0 * 1024.0) 
+                        INTO v_db_size_gb 
+                        FROM pg_database 
+                        WHERE datname = ANY(v_target_dbs_array);
+                    END IF;
+
+                    v_free_disk_gb := v_disk_total_size_gb - v_db_size_gb;
+
+                    -- 3. Validación contra el margen de seguridad
                     IF (v_free_disk_gb - v_peak_required_gb) < v_disk_safety_margin_gb THEN
                         UPDATE maint.vacuum_full_tasks 
                         SET status = 'SKIPPED_INSUFFICIENT_DISK_SPACE', 
                             ended_at = clock_timestamp(), 
-                            error_log = format('SKIPPED: Insufficient disk space for %I.%I. Peak required (Heap+Indexes+WAL): %s GB. Available after operation: %s GB. Required safety margin: %s GB.',
-                                               v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2), ROUND(v_disk_safety_margin_gb, 2))
+                            error_log = format('SKIPPED: Insufficient disk space for %I.%I. Peak required (Heap+Indexes+WAL): %s GB. Available after operation: %s GB. Required safety margin: %s GB. Checked DBs: %s.',
+                                               v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2), ROUND(v_disk_safety_margin_gb, 2), v_target_dbs_setting)
                         WHERE task_id = v_task_id;
                         COMMIT;
 
                         IF p_verbose THEN 
-                            RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.%. Requiere: % GB. Disponible tras op: % GB.', 
-                                          v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2); 
+                            RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.%. Requiere: % GB. Disponible tras op: % GB. Ámbito DB: %', 
+                                          v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2), v_target_dbs_setting; 
                         END IF;
 
                         v_pending_tasks := v_pending_tasks - 1;
@@ -775,4 +802,3 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_vacuum_full FROM PUBLIC;
 
 COMMIT;
-
