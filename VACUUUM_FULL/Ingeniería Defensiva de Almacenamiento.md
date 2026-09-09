@@ -3,7 +3,7 @@
 
  
 
-### 🛡️ FASE 3: RAZONAMIENTO PROFUNDO (La Ley del Peor Escenario)
+### 🛡️ RAZONAMIENTO PROFUNDO (La Ley del Peor Escenario)
 
 **¿Por qué elegimos `pg_indexes_size()` y le cerramos la puerta a `pgstatindex`?**
 
