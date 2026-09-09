@@ -349,6 +349,7 @@ DECLARE
     v_wal_amplification_factor NUMERIC;
     v_target_dbs_setting TEXT;
     v_target_dbs_array TEXT[];
+    v_formatted_dbs_log TEXT;
     v_table_oid OID;
     v_approx_tuple_len BIGINT;
     v_new_heap_gb NUMERIC;
@@ -375,11 +376,11 @@ BEGIN
 
     -- Pre-flight checks
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN
-        RAISE EXCEPTION 'CRÍTICO [INFRAESTRUCTURA]: La extensión "pg_background" no está instalada en la base de datos.';
+        RAISE EXCEPTION 'CRITICAL [INFRAESTRUCTURA]: La extensión "pg_background" no está instalada en la base de datos.';
     END IF;
 
     IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN
-        RAISE EXCEPTION 'CRÍTICO [RECURSOS]: El parámetro max_worker_processes (%) del servidor es menor a los hilos solicitados (%).', 
+        RAISE EXCEPTION 'CRITICAL [RECURSOS]: El parámetro max_worker_processes (%) del servidor es menor a los hilos solicitados (%).', 
                         current_setting('max_worker_processes'), p_parallel_workers;
     END IF;
 
@@ -709,6 +710,11 @@ BEGIN
                         -- Modo Lista Explicita: Parsea la lista separada por comas y sanitiza espacios
                         SELECT array_agg(TRIM(db_name)) INTO v_target_dbs_array
                         FROM unnest(string_to_array(v_target_dbs_setting, ',')) AS db_name;
+                     
+                     -- Validar si al menos una base de datos existe en el clúster
+                         IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = ANY(v_target_dbs_array)) THEN
+                             RAISE EXCEPTION 'CRITICAL [CONFIGURACIÓN]: Ninguna de las bases de datos especificadas en target_databases_for_disk_check (%) existe en esta instancia.', v_target_dbs_setting;
+                         END IF;
 
                         SELECT COALESCE(SUM(pg_database_size(datname)), 0) / (1024.0 * 1024.0 * 1024.0) 
                         INTO v_db_size_gb 
@@ -720,23 +726,41 @@ BEGIN
 
                     -- 3. Validación contra el margen de seguridad
                     IF (v_free_disk_gb - v_peak_required_gb) < v_disk_safety_margin_gb THEN
+                        -- Formateo inteligente para evitar saturación de logs con cientos de DBs
+                        IF TRIM(v_target_dbs_setting) = '-1' THEN
+                            v_formatted_dbs_log := 'ALL (-1)';
+                        ELSIF LOWER(TRIM(v_target_dbs_setting)) = 'current_database' THEN
+                            v_formatted_dbs_log := 'Current DB Only';
+                        ELSE
+                            v_formatted_dbs_log := format('%s DB(s) [%s%s]', 
+                                cardinality(v_target_dbs_array),
+                                array_to_string(v_target_dbs_array[1:3], ', '),
+                                CASE WHEN cardinality(v_target_dbs_array) > 3 THEN ', ...' ELSE '' END
+                            );
+                        END IF;
+
                         UPDATE maint.vacuum_full_tasks 
                         SET status = 'SKIPPED_INSUFFICIENT_DISK_SPACE', 
                             ended_at = clock_timestamp(), 
                             error_log = format('SKIPPED: Insufficient disk space for %I.%I. Peak required (Heap+Indexes+WAL): %s GB. Available after operation: %s GB. Required safety margin: %s GB. Checked DBs: %s.',
-                                               v_schema, v_table, ROUND(v_peak_required_gb, 2), ROUND(v_free_disk_gb - v_peak_required_gb, 2), ROUND(v_disk_safety_margin_gb, 2), v_target_dbs_setting)
+                                               v_schema, 
+                                               v_table, 
+                                               ROUND(v_peak_required_gb, 2), 
+                                               ROUND(v_free_disk_gb - v_peak_required_gb, 2), 
+                                               ROUND(v_disk_safety_margin_gb, 2), 
+                                               v_formatted_dbs_log)
                         WHERE task_id = v_task_id;
                         COMMIT;
 
                         IF p_verbose THEN 
-                              RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.% | Formula: ((Heap: % GB + Index: % GB) * WAL: %) = % GB Req. | Disponible tras op: % GB', 
+                            RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.% | Formula: ((Heap: % GB + Index: % GB) * WAL: %) = % GB Req. | Disponible tras op: % GB', 
                                           v_schema, 
                                           v_table, 
                                           ROUND(v_new_heap_gb, 2),
                                           ROUND(v_max_indexes_gb, 2),
                                           ROUND(v_wal_amplification_factor, 1),
                                           ROUND(v_peak_required_gb, 2), 
-                                          ROUND(v_free_disk_gb - v_peak_required_gb, 2);                           
+                                          ROUND(v_free_disk_gb - v_peak_required_gb, 2); 
                         END IF;
 
                         v_pending_tasks := v_pending_tasks - 1;
