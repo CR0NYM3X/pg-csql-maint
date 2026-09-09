@@ -9,11 +9,10 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: V3.2.0  (Grado Diamante - Dynamic Parameter Interception, Checksum & Triple Threshold)
+   VERSIÓN: V3.6.0 (Grado Diamante - Dynamic Parameter Interception, Multi-DB Disk Shield & Checksum)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
-
 
 CREATE SCHEMA IF NOT EXISTS maint;
 
@@ -22,6 +21,30 @@ CREATE SCHEMA IF NOT EXISTS maint;
 -- =========================================================================================
 CREATE EXTENSION IF NOT EXISTS pgstattuple;
 CREATE EXTENSION IF NOT EXISTS pg_background;
+
+-- =========================================================================================
+-- [NUEVO V3.6.0] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA
+-- =========================================================================================
+CREATE TABLE IF NOT EXISTS maint.instance_config (
+    config_id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    setting VARCHAR(255) NOT NULL,
+    unit VARCHAR(50) NULL,
+    setting_desc TEXT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+-- Inserción idempotente de parámetros operativos, ámbito Multi-DB e interruptores de seguridad
+INSERT INTO maint.instance_config (name, setting, unit, setting_desc) 
+VALUES 
+  ('max_parallel_reindex_workers', '4', 'workers', 'Límite máximo dinámico de workers concurrentes para REINDEX'),
+  ('disk_total_size_gb', '-1', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
+  ('disk_safety_margin_gb', '30', 'GB', 'Margen de seguridad intocable en disco (Techo de Acero)'),
+  ('wal_amplification_factor', '2.0', 'ratio', 'Factor de amplificación WAL (2.0 GCP/On-Premise, 1.0 Aurora/Decoupled)'),
+  ('target_databases_for_disk_check', '-1', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)')
+ON CONFLICT (name) DO NOTHING;
+
+COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
@@ -86,7 +109,7 @@ CREATE TABLE IF NOT EXISTS maint.pgstatindex (
     empty_pages_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00,
     
     total_bloat_kb NUMERIC(20,2) NOT NULL DEFAULT 0.00,
-    total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00, -- [NUEVO] Porcentaje de espacio libre recuperable
+    total_bloat_pct NUMERIC(12,2) NOT NULL DEFAULT 0.00, -- Porcentaje de espacio libre recuperable
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     requieres_reindex BOOLEAN NOT NULL DEFAULT FALSE,
     
@@ -110,13 +133,13 @@ CREATE TABLE IF NOT EXISTS maint.reindex_tasks (
     index_name VARCHAR(255) NOT NULL,
     
     frag_pct NUMERIC(5,2) NOT NULL,
-    bloat_pct NUMERIC(5,2) NOT NULL, -- [NUEVO] Auditoría forense del % de bloat al encolar
+    bloat_pct NUMERIC(5,2) NOT NULL, -- Auditoría forense del % de bloat al encolar
     bloat_kb NUMERIC(14,2) NOT NULL,
     is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
     
     old_relfilenode BIGINT,               -- Checksum Físico de validación (Antes)
     new_relfilenode BIGINT,               -- Checksum Físico de validación (Después)
-    status VARCHAR(30) DEFAULT 'PENDING',
+    status VARCHAR(50) DEFAULT 'PENDING',
     child_pid INT,
     child_cookie BIGINT,                          -- [HOMOLOGACIÓN UNIVERSAL]: Token de seguridad v2.0
     started_at TIMESTAMPTZ,
@@ -146,7 +169,7 @@ ON maint.reindex_tasks (job_id, status, task_id);
 CREATE OR REPLACE PROCEDURE maint.sp_pgstatindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
     p_frag_pct_threshold NUMERIC DEFAULT 40.00,
-    p_bloat_pct_threshold NUMERIC DEFAULT 20.00, -- [NUEVO] Umbral de % de Bloat (Espacio Libre)
+    p_bloat_pct_threshold NUMERIC DEFAULT 20.00, -- Umbral de % de Bloat (Espacio Libre)
     p_bloat_mb_threshold NUMERIC DEFAULT 1024.00,
     p_threshold_operator VARCHAR DEFAULT 'OR',  
     p_min_index_mb NUMERIC DEFAULT 10.00,
@@ -240,12 +263,12 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 
 -- =========================================================================================
--- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V3.4.2 (Universal Polimórfico)
+-- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V3.6.0 (Multi-DB Universal)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
     p_profile VARCHAR DEFAULT 'CONCURRENT',     
-    p_parallel_workers INT DEFAULT 2,           -- Rango estricto permitido: 1 a 4
+    p_parallel_workers INT DEFAULT 2,           -- Verificado contra maint.instance_config dinámicamente
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_frag_pct_threshold NUMERIC DEFAULT 40.00,
@@ -279,6 +302,20 @@ DECLARE
     -- [INYECCIÓN POLIMÓRFICA]: Control dinámico de versión sin pg_background_handle
     v_is_v2 BOOLEAN := FALSE;
     v_ext_version TEXT;
+
+    -- [NUEVO V3.6.0]: Variables Dinámicas, Ámbito Multi-DB y Pre-validación de Espacio en Disco para REINDEX
+    v_max_allowed_workers INT;
+    v_disk_total_size_gb NUMERIC;
+    v_disk_safety_margin_gb NUMERIC;
+    v_wal_amplification_factor NUMERIC;
+    v_target_dbs_setting TEXT;
+    v_target_dbs_array TEXT[];
+    v_formatted_dbs_log TEXT;
+    v_index_oid OID;
+    v_max_indexes_gb NUMERIC;
+    v_peak_required_gb NUMERIC;
+    v_db_size_gb NUMERIC;
+    v_free_disk_gb NUMERIC;
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
@@ -288,6 +325,13 @@ BEGIN
     IF v_ext_version IS NOT NULL AND SPLIT_PART(v_ext_version, '.', 1)::INT >= 2 THEN
         v_is_v2 := TRUE;
     END IF;
+
+    -- 0.1 Lectura de Configuración de Instancia Multi-DB (V3.6.0)
+    SELECT setting::INT INTO v_max_allowed_workers FROM maint.instance_config WHERE name = 'max_parallel_reindex_workers';
+    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.instance_config WHERE name = 'disk_total_size_gb';
+    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.instance_config WHERE name = 'disk_safety_margin_gb';
+    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.instance_config WHERE name = 'wal_amplification_factor';
+    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.instance_config WHERE name = 'target_databases_for_disk_check';
 
     -- =====================================================================
     -- 0. PRE-FLIGHT CHECK: INTERCEPCIÓN DINÁMICA DE RAM Y RECURSOS
@@ -307,9 +351,20 @@ BEGIN
     END IF;
 
     -- Validaciones Fail-Fast de Infraestructura
-    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN RAISE EXCEPTION 'CRITICAL: Extensión "pg_background" ausente.'; END IF;
-    IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN RAISE EXCEPTION 'CRÍTICO [RECURSOS]: max_worker_processes insuficiente.'; END IF;
-    IF p_parallel_workers < 1 OR p_parallel_workers > 4 THEN RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Para REINDEX, p_parallel_workers debe estar entre 1 y 4.'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN 
+        RAISE EXCEPTION 'CRITICAL [INFRAESTRUCTURA]: Extensión "pg_background" ausente.'; 
+    END IF;
+
+    IF (SELECT current_setting('max_worker_processes')::INT) < p_parallel_workers THEN 
+        RAISE EXCEPTION 'CRITICAL [RECURSOS]: El parámetro max_worker_processes (%) del servidor es menor a los hilos solicitados (%).', 
+                        current_setting('max_worker_processes'), p_parallel_workers; 
+    END IF;
+
+    -- [NUEVO V3.6.0]: Validación Dinámica de Paralelismo
+    IF p_parallel_workers < 1 OR p_parallel_workers > v_max_allowed_workers THEN 
+        RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Solicitados % hilos para REINDEX. El tope estricto configurado en maint.instance_config es %.', p_parallel_workers, v_max_allowed_workers; 
+    END IF;
+
     IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRITICAL: Perfil inválido.'; END IF;
     IF UPPER(p_scope) NOT IN ('SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST') THEN RAISE EXCEPTION 'CRITICAL: Ámbito inválido.'; END IF;
     IF v_profile_upper = 'FORCE_SURGERY' AND UPPER(p_scope) <> 'CUSTOM_LIST' THEN RAISE EXCEPTION 'ALERTA ROJA: FORCE_SURGERY requieres CUSTOM_LIST.'; END IF;
@@ -340,12 +395,32 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V3.4.2 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V3.6.0 - EXT: %)', COALESCE(v_ext_version, 'v1.x');
         RAISE INFO 'ALCANCE: % | HILOS: % | CUTOFF: % | REBUILD ZOMBIS: %', p_scope, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_rebuild_invalid;
+        RAISE INFO 'PRE-VALIDACIÓN DISCO: % GB | MARGEN: % GB | WAL_FACTOR: % | TARGET_DBS: %', 
+                   CASE WHEN v_disk_total_size_gb <= 0 THEN 'DESACTIVADO (-1)' ELSE v_disk_total_size_gb::TEXT END, 
+                   v_disk_safety_margin_gb, v_wal_amplification_factor, v_target_dbs_setting;
         RAISE INFO '=========================================================';
     END IF;
 
-    v_execution_params := jsonb_build_object('scope', p_scope, 'profile', v_profile_upper, 'parallel_workers', p_parallel_workers, 'frag_pct_threshold', p_frag_pct_threshold, 'bloat_pct_threshold', p_bloat_pct_threshold, 'bloat_mb_threshold', p_bloat_mb_threshold, 'threshold_operator', v_op_upper, 'force_frag_pct', p_force_frag_pct, 'force_bloat_mb', p_force_bloat_mb, 'rebuild_invalid', p_rebuild_invalid, 'keep_history', p_keep_history, 'pg_background_version', COALESCE(v_ext_version, '1.x'));
+    v_execution_params := jsonb_build_object(
+        'scope', p_scope, 
+        'profile', v_profile_upper, 
+        'parallel_workers', p_parallel_workers, 
+        'frag_pct_threshold', p_frag_pct_threshold, 
+        'bloat_pct_threshold', p_bloat_pct_threshold, 
+        'bloat_mb_threshold', p_bloat_mb_threshold, 
+        'threshold_operator', v_op_upper, 
+        'force_frag_pct', p_force_frag_pct, 
+        'force_bloat_mb', p_force_bloat_mb, 
+        'rebuild_invalid', p_rebuild_invalid, 
+        'keep_history', p_keep_history, 
+        'pg_background_version', COALESCE(v_ext_version, '1.x'),
+        'disk_total_size_gb', v_disk_total_size_gb,
+        'disk_safety_margin_gb', v_disk_safety_margin_gb,
+        'wal_amplification_factor', v_wal_amplification_factor,
+        'target_databases_for_disk_check', v_target_dbs_setting
+    );
 
     INSERT INTO maint.jobs (job_type, maintenance_action, orchestrator_pid, execution_params, status)
     VALUES (p_scope || '_' || v_profile_upper, 'REINDEX', pg_backend_pid(), v_execution_params, 'RUNNING') RETURNING job_id INTO v_job_id;
@@ -455,7 +530,90 @@ BEGIN
             FROM maint.reindex_tasks WHERE job_id = v_job_id AND status = 'PENDING' ORDER BY is_invalid DESC, bloat_kb ASC, task_id ASC LIMIT 1;
             
             IF v_task_id IS NOT NULL THEN
-                SELECT c.relfilenode INTO v_old_node FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = v_schema AND c.relname = v_index;
+                SELECT c.oid, c.relfilenode INTO v_index_oid, v_old_node 
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace 
+                WHERE n.nspname = v_schema AND c.relname = v_index;
+
+                -- =====================================================================================
+                -- [NUEVO V3.6.0] PRE-VALIDACIÓN MULTI-DB DE ESPACIO EN DISCO PARA REINDEX (TECHO DE ACERO)
+                -- =====================================================================================
+                IF v_disk_total_size_gb > 0 THEN
+                    -- 1. Calcular tamaño del índice únicamente (en GB)
+                    v_max_indexes_gb   := pg_relation_size(v_index_oid) / (1024.0 * 1024.0 * 1024.0);
+                    v_peak_required_gb := v_max_indexes_gb * v_wal_amplification_factor;
+
+                    -- 2. Cálculo dinámico de ocupación de bases de datos según configuración target_databases_for_disk_check
+                    IF TRIM(v_target_dbs_setting) = '-1' THEN
+                        -- Modo -1: Suma el tamaño de TODAS las bases de datos conectables de la instancia
+                        SELECT COALESCE(SUM(pg_database_size(oid)), 0) / (1024.0 * 1024.0 * 1024.0) 
+                        INTO v_db_size_gb 
+                        FROM pg_database 
+                        WHERE datallowconn = TRUE;
+                    ELSIF LOWER(TRIM(v_target_dbs_setting)) = 'current_database' THEN
+                        -- Modo current_database: Evalúa únicamente la base de datos actual
+                        v_db_size_gb := pg_database_size(current_database()) / (1024.0 * 1024.0 * 1024.0);
+                    ELSE
+                        -- Modo Lista Explicita: Parsea la lista separada por comas y sanitiza espacios
+                        SELECT array_agg(TRIM(db_name)) INTO v_target_dbs_array
+                        FROM unnest(string_to_array(v_target_dbs_setting, ',')) AS db_name;
+
+                        -- Validar si al menos una base de datos existe en el clúster
+                        IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = ANY(v_target_dbs_array)) THEN
+                            RAISE EXCEPTION 'CRITICAL [CONFIGURACIÓN]: Ninguna de las bases de datos especificadas en target_databases_for_disk_check (%) existe en esta instancia.', v_target_dbs_setting;
+                        END IF;
+
+                        SELECT COALESCE(SUM(pg_database_size(datname)), 0) / (1024.0 * 1024.0 * 1024.0) 
+                        INTO v_db_size_gb 
+                        FROM pg_database 
+                        WHERE datname = ANY(v_target_dbs_array);
+                    END IF;
+
+                    v_free_disk_gb := v_disk_total_size_gb - v_db_size_gb;
+
+                    -- 3. Validación contra el margen de seguridad
+                    IF (v_free_disk_gb - v_peak_required_gb) < v_disk_safety_margin_gb THEN
+                        -- Formateo inteligente para evitar saturación de logs con cientos de DBs
+                        IF TRIM(v_target_dbs_setting) = '-1' THEN
+                            v_formatted_dbs_log := 'ALL (-1)';
+                        ELSIF LOWER(TRIM(v_target_dbs_setting)) = 'current_database' THEN
+                            v_formatted_dbs_log := 'Current DB Only';
+                        ELSE
+                            v_formatted_dbs_log := format('%s DB(s) [%s%s]', 
+                                cardinality(v_target_dbs_array),
+                                array_to_string(v_target_dbs_array[1:3], ', '),
+                                CASE WHEN cardinality(v_target_dbs_array) > 3 THEN ', ...' ELSE '' END
+                            );
+                        END IF;
+
+                        UPDATE maint.reindex_tasks 
+                        SET status = 'SKIPPED_INSUFFICIENT_DISK_SPACE', 
+                            ended_at = clock_timestamp(), 
+                            error_log = format('SKIPPED: Insufficient disk space for %I.%I. Peak required (Index+WAL): %s GB. Available after operation: %s GB. Required safety margin: %s GB. Checked DBs: %s.',
+                                               v_schema, 
+                                               v_index, 
+                                               ROUND(v_peak_required_gb, 2), 
+                                               ROUND(v_free_disk_gb - v_peak_required_gb, 2), 
+                                               ROUND(v_disk_safety_margin_gb, 2), 
+                                               v_formatted_dbs_log)
+                        WHERE task_id = v_task_id;
+                        COMMIT;
+
+                        IF p_verbose THEN 
+                            RAISE WARNING '    [X] DISK SHIELD (OMITIDO): %.% | Formula: (Index: % GB * WAL: %) = % GB Req. | Disponible tras op: % GB', 
+                                          v_schema, 
+                                          v_index, 
+                                          ROUND(v_max_indexes_gb, 2),
+                                          ROUND(v_wal_amplification_factor, 1),
+                                          ROUND(v_peak_required_gb, 2), 
+                                          ROUND(v_free_disk_gb - v_peak_required_gb, 2); 
+                        END IF;
+
+                        v_pending_tasks := v_pending_tasks - 1;
+                        CONTINUE; -- Bypass quirúrgico: saltar al siguiente índice en la cola
+                    END IF;
+                END IF;
+                -- =====================================================================================
+
                 UPDATE maint.reindex_tasks SET status = 'RUNNING', started_at = clock_timestamp(), old_relfilenode = v_old_node WHERE task_id = v_task_id; 
                 
                 -- LIBERACIÓN CRÍTICA 3: Cierra la transacción antes del lanzamiento
