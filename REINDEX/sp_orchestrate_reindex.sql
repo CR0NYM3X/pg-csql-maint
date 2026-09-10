@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: V3.6.0 (Grado Diamante - Dynamic Parameter Interception, Multi-DB Disk Shield & Checksum)
+   VERSIÓN: V3.6.0 (Grado Diamante - Dynamic Parameter Interception, Multi-DB Disk Shield, Triada AND/OR & Checksum)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -164,7 +164,7 @@ CREATE INDEX IF NOT EXISTS idx_reindex_tasks_job_status_id
 ON maint.reindex_tasks (job_id, status, task_id);
 
 -- =========================================================================================
--- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V3.4.1)
+-- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V3.6.0 - TRIADA DE CONTROL)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_pgstatindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
@@ -197,7 +197,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES V3.4.1 (LOGIC: % | FRAG: %%% | BLOAT: %%% / % MB | FORCE_MB: %)', 
+        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES V3.6.0 (LOGIC: % | FRAG: %%% | BLOAT: %%% / % MB | FORCE_MB: %)', 
                    v_op_upper, p_frag_pct_threshold, p_bloat_pct_threshold, p_bloat_mb_threshold, COALESCE(p_force_bloat_mb::TEXT, 'OFF');
         RAISE INFO '=========================================================';
     END IF;
@@ -231,13 +231,24 @@ BEGIN
                 v_total_bloat_pct := ROUND((100.00 - v_avg_density)::numeric, 2);
                 v_est_bloat_kb := ROUND((v_size_kb * (v_total_bloat_pct / 100.0))::numeric, 2);
 
-                -- EVALUACIÓN MATEMÁTICA CON TRIPLE VÍA (BYPASS / AND / OR)
+                -- EVALUACIÓN MATEMÁTICA RESTRUCTURADA (TRIADA V4.0.0 / V3.6.0)
                 IF (p_force_frag_pct IS NOT NULL AND v_leaf_frag >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND v_est_bloat_kb >= v_force_bloat_kb) THEN
+                    -- Vía 1: Bypass de Fuerza Bruta (Garantiza el rescate de índices destruidos)
                     v_requieres_reindex := TRUE;
                 ELSIF v_op_upper = 'AND' THEN
-                    v_requieres_reindex := (v_leaf_frag >= p_frag_pct_threshold OR (v_total_bloat_pct >= p_bloat_pct_threshold AND v_est_bloat_kb >= v_threshold_kb));
+                    -- Vía 2: Regla AND Estricta que vincula las 3 variables simultáneamente
+                    v_requieres_reindex := (
+                        v_leaf_frag >= p_frag_pct_threshold 
+                        AND v_total_bloat_pct >= p_bloat_pct_threshold 
+                        AND v_est_bloat_kb >= v_threshold_kb
+                    );
                 ELSE
-                    v_requieres_reindex := (v_leaf_frag >= p_frag_pct_threshold OR v_total_bloat_pct >= p_bloat_pct_threshold OR v_est_bloat_kb >= v_threshold_kb);
+                    -- Vía 3: Regla OR Flexible
+                    v_requieres_reindex := (
+                        v_leaf_frag >= p_frag_pct_threshold 
+                        OR v_total_bloat_pct >= p_bloat_pct_threshold 
+                        OR v_est_bloat_kb >= v_threshold_kb
+                    );
                 END IF;
             END IF;
 
@@ -429,7 +440,7 @@ BEGIN
     COMMIT; 
 
     -- =====================================================================
-    -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint)
+    -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint y Triada V4.0.0)
     -- =====================================================================
     FOR r_idx IN (
         SELECT t.schema_name, t.table_name, t.index_name, t.total_bloat_kb, t.total_bloat_pct, t.leaf_fragmentation_pct, t.is_invalid
@@ -446,7 +457,11 @@ BEGIN
         ELSE
             v_force_bypass := ((p_force_frag_pct IS NOT NULL AND r_idx.leaf_fragmentation_pct >= p_force_frag_pct) OR (v_force_bloat_kb IS NOT NULL AND r_idx.total_bloat_kb >= v_force_bloat_kb));
 
-            IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR ((v_op_upper = 'AND' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR (r_idx.total_bloat_pct >= p_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold)))) OR ((v_op_upper = 'OR' AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_pct >= p_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))) THEN
+            -- EVALUACIÓN MATEMÁTICA EN POBLADO DE COLA (SIMETRÍA TOTAL CON TRIADA V4.0.0)
+            IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR (
+                (v_op_upper = 'AND' AND r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold AND r_idx.total_bloat_pct >= p_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_bloat_kb_threshold) OR
+                (v_op_upper = 'OR'  AND (r_idx.leaf_fragmentation_pct >= p_frag_pct_threshold OR r_idx.total_bloat_pct >= p_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_bloat_kb_threshold))
+            ) THEN
                 INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
                 VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
                 v_total_tasks := v_total_tasks + 1;
@@ -512,6 +527,7 @@ BEGIN
                 END;
             END;
             COMMIT; 
+        LOOP_END;
         END LOOP;
 
         IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
