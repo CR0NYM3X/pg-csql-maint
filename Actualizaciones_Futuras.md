@@ -104,58 +104,10 @@ EXCEPTION WHEN OTHERS THEN
 
 ```
 
-
-
----
-
-## **4. Parametrización Dinámica de Paralelismo (`maint.instance_config`)**
-
-*Por: Marcos (Arquitectura) y Samuel (S.O. Linux)*
-
-* **Problema:** Hardcodear el tope de workers paralelos (ej. entre 1 y 2) limita instancias robustas con arreglos NVMe y sobra de CPU, mientras que exponer un parámetro libre en la llamada puede saturar instancias pequeñas.
-* **Solución de Ingeniería:** Crear una tabla de configuración persistente a nivel de instancia (`maint.instance_config`) para leer los límites físicos permitidos.
-* **DDL de Configuración:**
-```sql
-CREATE TABLE IF NOT EXISTS maint.instance_config (
-    config_id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL UNIQUE,
-    setting VARCHAR(255) NOT NULL,
-    unit VARCHAR(50) NULL,
-    setting_desc TEXT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
-INSERT INTO maint.instance_config (name, setting, setting_desc) 
-VALUES ('max_parallel_vacuum_full_workers', '2', 'Límite máximo de workers concurrentes para tareas pesadas')
-ON CONFLICT (name) DO NOTHING;
-
+## **agregarle todos los parametros para modificar en proyectos de vacuum y vacuum full**
 ```
-
-
-* **Lógica de Validación:** El orquestador lee `setting` de esta tabla en lugar de usar constantes numéricas fijas, validándolo dinámicamente contra `max_worker_processes` de `pg_settings`.
-
----
-
-## **5. Pre-validación de Espacio en Disco antes del Despacho (Seguridad para `VACUUM FULL` / `REINDEX`)**
-
-*Por: Héctor (Respaldos/DRP) y Javier (Alta Disponibilidad)*
-
-* **Problema:** Ejecutar `VACUUM FULL` o `REINDEX` en tablas de gran volumetría sin suficiente espacio disponible en disco provoca un colapso del almacenamiento (*Disk Full Panic*), corrompiendo la instancia o dejándola fuera de servicio.
-* **Solución de Ingeniería:** Calcular el espacio libre real de la partición de datos y restarle el margen de seguridad requerido antes de autorizar el despacho de la tarea.
-* **Fórmula Operativa de Validación:**
-
- 
-* **Regla de Despacho:**
+select  name,setting,reset_val from pg_settings where name ilike '%vacuum%';
 ```
-
-validacion que debe realizar para poder hacer un vacuum full 
-( ( ( ( ( 600 [Espacio de disco] - 250 [tamaño de base de datos] = 350 )  - 150 [Espacio solicitado por cada vacuumfull] )  = 200 ) * 2 [WAL] ) >= 30 [GB Margen de seguridad] ) = TRUE 
-```
-
-
-La tarea se marca como `SKIPPED_INSUFFICIENT_DISK_SPACE` con log explicativo, protegiendo la base de datos de un crash por falta de espacio.
-
----
 
 ## **6. Alertamiento Activo vía `NOTIFY` (Integración Externa)**
 
