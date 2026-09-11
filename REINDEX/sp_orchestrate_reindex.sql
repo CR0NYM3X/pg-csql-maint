@@ -25,7 +25,7 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 -- [NUEVO V3.6.0] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA
 -- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.instance_config (
+CREATE TABLE IF NOT EXISTS maint.config (
     config_id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL UNIQUE,
     setting VARCHAR(255) NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS maint.instance_config (
 );
 
 -- Inserción idempotente de parámetros operativos, ámbito Multi-DB e interruptores de seguridad
-INSERT INTO maint.instance_config (name, setting, unit, setting_desc) 
+INSERT INTO maint.config (name, setting, unit, setting_desc) 
 VALUES 
   ('max_parallel_reindex_workers', '4', 'workers', 'Límite máximo dinámico de workers concurrentes para REINDEX'),
   ('disk_total_size_gb', '-1', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
@@ -44,7 +44,7 @@ VALUES
   ('target_databases_for_disk_check', '-1', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)')
 ON CONFLICT (name) DO NOTHING;
 
-COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
+COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
@@ -279,7 +279,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
     p_profile VARCHAR DEFAULT 'CONCURRENT',     
-    p_parallel_workers INT DEFAULT 2,           -- Verificado contra maint.instance_config dinámicamente
+    p_parallel_workers INT DEFAULT 2,           -- Verificado contra maint.config dinámicamente
     p_cutoff_time TIME DEFAULT NULL,
     p_verbose BOOLEAN DEFAULT FALSE,
     p_frag_pct_threshold NUMERIC DEFAULT 40.00,
@@ -338,11 +338,11 @@ BEGIN
     END IF;
 
     -- 0.1 Lectura de Configuración de Instancia Multi-DB (V3.6.0)
-    SELECT setting::INT INTO v_max_allowed_workers FROM maint.instance_config WHERE name = 'max_parallel_reindex_workers';
-    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.instance_config WHERE name = 'disk_total_size_gb';
-    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.instance_config WHERE name = 'disk_safety_margin_gb';
-    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.instance_config WHERE name = 'wal_amplification_factor';
-    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.instance_config WHERE name = 'target_databases_for_disk_check';
+    SELECT setting::INT INTO v_max_allowed_workers FROM maint.config WHERE name = 'max_parallel_reindex_workers';
+    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.config WHERE name = 'disk_total_size_gb';
+    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.config WHERE name = 'disk_safety_margin_gb';
+    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.config WHERE name = 'wal_amplification_factor';
+    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.config WHERE name = 'target_databases_for_disk_check';
 
     -- =====================================================================
     -- 0. PRE-FLIGHT CHECK: INTERCEPCIÓN DINÁMICA DE RAM Y RECURSOS
@@ -373,7 +373,7 @@ BEGIN
 
     -- [NUEVO V3.6.0]: Validación Dinámica de Paralelismo
     IF p_parallel_workers < 1 OR p_parallel_workers > v_max_allowed_workers THEN 
-        RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Solicitados % hilos para REINDEX. El tope estricto configurado en maint.instance_config es %.', p_parallel_workers, v_max_allowed_workers; 
+        RAISE EXCEPTION 'ALERTA SEGURIDAD I/O: Solicitados % hilos para REINDEX. El tope estricto configurado en maint.config es %.', p_parallel_workers, v_max_allowed_workers; 
     END IF;
 
     IF v_profile_upper NOT IN ('CONCURRENT', 'FORCE_SURGERY') THEN RAISE EXCEPTION 'CRITICAL: Perfil inválido.'; END IF;
