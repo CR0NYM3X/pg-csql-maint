@@ -25,7 +25,7 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 -- [NUEVO V3.6.0] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA
 -- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.instance_config (
+CREATE TABLE IF NOT EXISTS maint.config (
     config_id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL UNIQUE,
     setting VARCHAR(255) NOT NULL,
@@ -35,12 +35,12 @@ CREATE TABLE IF NOT EXISTS maint.instance_config (
 );
 
 -- Inserción idempotente de parámetros operativos y límites de trabajadores
-INSERT INTO maint.instance_config (name, setting, unit, setting_desc) 
+INSERT INTO maint.config (name, setting, unit, setting_desc) 
 VALUES 
   ('max_parallel_vacuum_workers', '30', 'workers', 'Límite máximo dinámico de workers concurrentes para VACUUM estándar')
 ON CONFLICT (name) DO NOTHING;
 
-COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
+COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos
@@ -231,7 +231,7 @@ BEGIN
 
     -- 0.1 Lectura de Configuración de Instancia (V3.6.0)
     SELECT setting::INT INTO v_max_allowed_workers 
-    FROM maint.instance_config 
+    FROM maint.config 
     WHERE name = 'max_parallel_vacuum_workers';
 
     -- Pre-flight checks de Infraestructura y Recursos
@@ -246,7 +246,7 @@ BEGIN
 
     -- [NUEVO V3.6.0]: Validación Dinámica de Paralelismo
     IF p_parallel_workers < 1 OR p_parallel_workers > v_max_allowed_workers THEN
-        RAISE EXCEPTION 'ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados % hilos para VACUUM. El tope estricto configurado en maint.instance_config es %.', p_parallel_workers, v_max_allowed_workers;
+        RAISE EXCEPTION 'ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados % hilos para VACUUM. El tope estricto configurado en maint.config es %.', p_parallel_workers, v_max_allowed_workers;
     END IF;
 
     -- =====================================================================
