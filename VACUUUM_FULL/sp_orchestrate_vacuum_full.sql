@@ -25,7 +25,7 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 -- [NUEVO V3.6.0] 0. TABLA DE CONFIGURACIÓN DINÁMICA DE INSTANCIA
 -- =========================================================================================
-CREATE TABLE IF NOT EXISTS maint.instance_config (
+CREATE TABLE IF NOT EXISTS maint.config (
     config_id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL UNIQUE,
     setting VARCHAR(255) NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS maint.instance_config (
 );
 
 -- Inserción idempotente de parámetros operativos, ámbito Multi-DB e interruptores de seguridad
-INSERT INTO maint.instance_config (name, setting, unit, setting_desc) 
+INSERT INTO maint.config (name, setting, unit, setting_desc) 
 VALUES 
   ('max_parallel_vacuum_full_workers', '2', 'workers', 'Límite máximo dinámico de workers concurrentes para cirugías'),
   ('disk_total_size_gb', '-1', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
@@ -44,7 +44,7 @@ VALUES
   ('target_databases_for_disk_check', '-1', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)')
 ON CONFLICT (name) DO NOTHING;
 
-COMMENT ON TABLE maint.instance_config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
+COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
@@ -306,7 +306,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
     p_scope                 VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
     p_profile               VARCHAR DEFAULT 'SMART',            -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
-    p_parallel_workers      INT DEFAULT 1,                      -- Verificado contra maint.instance_config dinámicamente
+    p_parallel_workers      INT DEFAULT 1,                      -- Verificado contra maint.config dinámicamente
     p_cutoff_time           TIME DEFAULT NULL,
     p_kill_active_on_cutoff BOOLEAN DEFAULT FALSE,              -- Interrupción activa de procesos RUNNING al alcanzar cutoff
     p_verbose               BOOLEAN DEFAULT FALSE,
@@ -368,11 +368,11 @@ BEGIN
     END IF;
 
     -- 0.1 Lectura de Configuración de Instancia Multi-DB (V3.6.0)
-    SELECT setting::INT INTO v_max_allowed_workers FROM maint.instance_config WHERE name = 'max_parallel_vacuum_full_workers';
-    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.instance_config WHERE name = 'disk_total_size_gb';
-    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.instance_config WHERE name = 'disk_safety_margin_gb';
-    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.instance_config WHERE name = 'wal_amplification_factor';
-    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.instance_config WHERE name = 'target_databases_for_disk_check';
+    SELECT setting::INT INTO v_max_allowed_workers FROM maint.config WHERE name = 'max_parallel_vacuum_full_workers';
+    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.config WHERE name = 'disk_total_size_gb';
+    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.config WHERE name = 'disk_safety_margin_gb';
+    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.config WHERE name = 'wal_amplification_factor';
+    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.config WHERE name = 'target_databases_for_disk_check';
 
     -- Pre-flight checks
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN
@@ -386,7 +386,7 @@ BEGIN
 
     -- [NUEVO V3.6.0]: Validación Dinámica de Paralelismo
     IF p_parallel_workers < 1 OR p_parallel_workers > v_max_allowed_workers THEN
-        RAISE EXCEPTION 'ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados % hilos para VACUUM FULL. El tope estricto configurado en maint.instance_config es %.', p_parallel_workers, v_max_allowed_workers;
+        RAISE EXCEPTION 'ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados % hilos para VACUUM FULL. El tope estricto configurado en maint.config es %.', p_parallel_workers, v_max_allowed_workers;
     END IF;
 
     IF v_profile_upper NOT IN ('SMART', 'FORCE_SURGERY') THEN
