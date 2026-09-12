@@ -1336,3 +1336,157 @@ ORDER BY a.query_start ASC;
 
 1. **Pruebas de Estrés Superadas:** El laboratorio demuestra el aislamiento estricto de tablas en listas negras, la activación del Bypass por fuerza bruta y la ejecución quirúrgica por `CUSTOM_LIST`.
 2. **Integridad de Datos Garantizada:** El nuevo mecanismo de comparación `old_relfilenode` vs `new_relfilenode` provee una garantía forense al $100\%$, certificando que cada tarea marcada como `SUCCESS` sufrió la reescritura de archivos en el almacenamiento operativo.
+
+
+
+
+---
+
+
+ 
+### 🔧 LA SOLUCIÓN: LABORATORIO DE ANIQUILACIÓN ACTIVA (`KILL CUTOFF`)
+
+Para poner a prueba la válvula de aniquilación activa en condiciones de **fuego real**, necesitamos:
+
+1. **Bloquear una tabla** en una transacción abierta para que el `VACUUM FULL` se quede atascado esperando el bloqueo (`RUNNING`).
+2. **Programar el `p_cutoff_time**` exactamente **10 segundos en el futuro** respecto a la hora actual del servidor.
+3. Ejecutar el orquestador con `p_kill_active_on_cutoff => TRUE` para ver cómo detecta el tiempo límite, envía `SIGINT`/`SIGTERM`, libera la memoria DSM (`detach`) y marca el estado en `ABORTED_BY_CUTOFF`.
+
+---
+
+### 🧪 LABORATORIO PASO A PASO PARA PROBAR LA ANIQUILACIÓN
+
+#### Paso 1: Generar Bloqueo Pesado en la Tabla de Prueba
+
+Abre una sesión SQL paralela (Sesión A) y bloquea la tabla para evitar que `VACUUM FULL` termine de inmediato:
+
+```sql
+-- [SESIÓN A]: Mantiene un bloqueo exclusivo para congelar el VACUUM FULL
+BEGIN;
+LOCK TABLE lab.demo_heavy_updates IN SHARE UPDATE EXCLUSIVE MODE;
+-- NO HAGAS COMMIT NI ROLLBACK AÚN. DÉJALA ABIERTA.
+
+```
+
+---
+
+#### Paso 2: Consultar la Hora Exacta del Servidor
+
+En tu sesión principal (Sesión B), consulta la hora exacta:
+
+```sql
+SELECT LOCALTIME;
+
+```
+
+*Ejemplo de salida:* `19:02:50`
+
+---
+
+#### Paso 3: Ejecutar el Orquestador con Cutoff Calculado
+
+Suma **10-15 segundos** a la hora obtenida en el Paso 2 para configurar `p_cutoff_time` (por ejemplo, si la hora era `19:02:50`, ajusta a `19:03:05`):
+
+```sql
+
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'SMART_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         =>  '19:15:00'::TIME,
+    p_kill_active_on_cutoff => TRUE,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 50.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => NULL,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+```
+
+**Salida Esperada en Consola:**
+
+```text
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0)
+INFO:  ALCANCE: CUSTOM_LIST | MODO: FORCE_SURGERY | HILOS: 1 | CUTOFF: 19:03:02 | KILL_CUTOFF: t
+INFO:  =========================================================
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1014520 -> lab.demo_extreme_bloat (OLD NODE: 1842178)
+WARNING: [KILL CUTOFF] Abortado forzosamente VACUUM FULL en lab.demo_extreme_bloat (PID: 1014520)
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 15 | Procesadas: 0 / 1
+INFO:  Tiempo Total: 00:00:12.105421
+INFO:  =========================================================
+CALL
+
+```
+
+---
+
+#### Paso 4: Liberar la Sesión A
+
+Regresa a la Sesión A y cierra la transacción:
+
+```sql
+-- [SESIÓN A]:
+ROLLBACK;
+
+```
+
+---
+
+#### Paso 5: Verificación Forense del Aborto por Cutoff
+
+Consulta la bitácora de tareas para confirmar que el proceso fue destruido forzosamente:
+
+```sql
+SELECT 
+    task_id,
+    job_id,
+    schema_name,
+    table_name,
+    status,
+    child_pid,
+    started_at,
+    ended_at,
+    error_log
+FROM maint.vacuum_full_tasks
+WHERE status = 'ABORTED_BY_CUTOFF'
+ORDER BY task_id DESC LIMIT 1;
+
+
+
+SELECT 
+    task_id,
+    job_id,
+    schema_name,
+    table_name,
+    status,
+    child_pid,
+    started_at,
+    ended_at,
+    error_log
+FROM maint.vacuum_full_tasks
+ORDER BY task_id DESC LIMIT 1;
+
+
+```
+
+**Salida Esperada:**
+
+```text
+-[ RECORD 1 ]+------------------------------------------------------------------------------------
+task_id     | 18
+job_id      | 15
+schema_name | lab
+table_name  | demo_extreme_bloat
+status      | ABORTED_BY_CUTOFF
+child_pid   | 1014520
+started_at  | 2026-09-11 19:02:50.124501-07
+ended_at    | 2026-09-11 19:03:02.301245-07
+error_log   | Cirugía abortada forzosamente por haber alcanzado el Cutoff Time estricto.
+
+```
