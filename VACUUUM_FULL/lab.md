@@ -470,8 +470,8 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
 ### Colocar un tamaño de disco chico para que marque el error al hacer el mantenimiento
 Esto provocara que salte el mensaje de que no hay espacio en disco  , ya que todas base de datos pesan 303GB y esto 
 ```
-update maint.instance_config set setting  = '200' where name  = 'disk_total_size_gb';
-select name,setting,unit from maint.instance_config;
+update maint.config set setting  = '200' where name  = 'disk_total_size_gb';
+select name,setting,unit from maint.config;
 ```
 **Salida esperada**
 ```
@@ -551,7 +551,7 @@ error_log          | SKIPPED: Insufficient disk space for lab.demo_extreme_bloat
 ```
 
 
-update maint.instance_config set setting = '1000' where name = 'disk_total_size_gb';
+update maint.config set setting = '1000' where name = 'disk_total_size_gb';
 
 
 
