@@ -530,7 +530,7 @@ BEGIN
         LOOP_END;
         END LOOP;
 
-        IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
+        IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN
             UPDATE maint.reindex_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' WHERE job_id = v_job_id AND status = 'PENDING'; COMMIT;
         END IF;
 
@@ -539,7 +539,7 @@ BEGIN
         IF v_active_workers = 0 AND v_pending_tasks = 0 THEN EXIT; END IF;
 
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
-            IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
+            IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN EXIT; END IF;
 
             SELECT task_id, schema_name, table_name, index_name, bloat_kb, bloat_pct, frag_pct, is_invalid 
             INTO v_task_id, v_schema, v_table, v_index, v_bloat_kb_eval, v_bloat_pct_eval, v_frag_pct_eval, r_idx.is_invalid 
