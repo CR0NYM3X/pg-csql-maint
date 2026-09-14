@@ -123,7 +123,7 @@ WHERE schema_name = 'lab';
 ```text
  filter_id | schema_name |      table_name       | maintenance_action | is_ignored | force_maintenance 
 -----------+-------------+-----------------------+--------------------+------------+-------------------
-         1 | lab         | demo_escudo_historial | VACUUM_FULL        | t          | f
+         1 | lab         | demo_extreme_bloat    | VACUUM_FULL        | t          | f
          2 | lab         | demo_vip_facturas     | VACUUM_FULL        | f          | t
 
 
@@ -239,7 +239,7 @@ Ejecutamos el procedimiento Triage para registrar el *bloat* en Kilobytes en la 
 ```sql
 CALL maint.sp_pgstattuple(
     p_scope               => 'SMART_USER',
-    p_bloat_pct_threshold => 50.00,
+    p_bloat_pct_threshold => 40.00,
     p_bloat_mb_threshold  => 50.00,        -- Umbral regular (50 MB)
     p_threshold_operator => 'OR',         -- Compuerta entre % y MB ('OR' / 'AND')
     p_min_table_mb        => 0.00,          -- Evalúa desde 0 MB en adelante
@@ -247,164 +247,19 @@ CALL maint.sp_pgstattuple(
     p_enable_deep_scan    => FALSE,        -- Escaneo bloque a bloque (FALSE = Aprox rápido)
     p_verbose             => TRUE          -- Diagnóstico visual en consola
 );
-
 ```
 
 **Salida esperada**
 
 ```text
 INFO:  =========================================================
-INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.9 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 5
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 6
 CALL
-
 ```
 
-### Revisar las si guardo los datos correctos
 
-si observamos aunque este aplicado el filtro de la tabla demo_escudo_historial aun asi se involuctra en el escaneo, aqui el orquestador es inteligente para ya no ejecutarlo.
-
-```sql
-select * from maint.pgstattuple where table_name 
- IN (
-      'demo_extreme_bloat',
-      'demo_heavy_updates',
-      'demo_vip_facturas',
-      'demo_escudo_historial'
-  );
-
-```
-
-**Salida esperada**
-
-```text
--[ RECORD 1 ]-------------+------------------------------
-triage_id                 | 229
-evaluation_date           | 2026-08-26
-schema_name               | lab
-table_name                | demo_extreme_bloat
-approx_scanned            | t
-approx_evaluated_at       | 2026-08-26 00:33:06.125732+00
-approx_table_len          | 273072128
-approx_scanned_percent    | 0.00
-approx_tuple_count        | 29981
-approx_tuple_len          | 27413312
-approx_tuple_percent      | 10.04
-approx_dead_tuple_count   | 0
-approx_dead_tuple_len     | 0
-approx_dead_tuple_percent | 0.00
-approx_free_space         | 245658816
-approx_free_percent       | 89.96
-deep_scanned              | f
-deep_evaluated_at         | 
-deep_table_len            | 
-deep_tuple_count          | 
-deep_tuple_len            | 
-deep_tuple_percent        | 
-deep_dead_tuple_count     | 
-deep_dead_tuple_len       | 
-deep_dead_tuple_percent   | 
-deep_free_space           | 
-deep_free_percent         | 
-total_bloat_kb            | 239901.19
-total_bloat_pct           | 89.96
-requires_vf               | t
--[ RECORD 2 ]-------------+------------------------------
-triage_id                 | 239
-evaluation_date           | 2026-08-26
-schema_name               | lab
-table_name                | demo_heavy_updates
-approx_scanned            | t
-approx_evaluated_at       | 2026-08-26 00:33:06.145787+00
-approx_table_len          | 15654912
-approx_scanned_percent    | 0.00
-approx_tuple_count        | 150000
-approx_tuple_len          | 7857632
-approx_tuple_percent      | 50.19
-approx_dead_tuple_count   | 0
-approx_dead_tuple_len     | 0
-approx_dead_tuple_percent | 0.00
-approx_free_space         | 7797280
-approx_free_percent       | 49.81
-deep_scanned              | f
-deep_evaluated_at         | 
-deep_table_len            | 
-deep_tuple_count          | 
-deep_tuple_len            | 
-deep_tuple_percent        | 
-deep_dead_tuple_count     | 
-deep_dead_tuple_len       | 
-deep_dead_tuple_percent   | 
-deep_free_space           | 
-deep_free_percent         | 
-total_bloat_kb            | 7614.53
-total_bloat_pct           | 49.81
-requires_vf               | t
--[ RECORD 3 ]-------------+------------------------------
-triage_id                 | 264
-evaluation_date           | 2026-08-26
-schema_name               | lab
-table_name                | demo_vip_facturas
-approx_scanned            | t
-approx_evaluated_at       | 2026-08-26 00:33:06.1774+00
-approx_table_len          | 2613248
-approx_scanned_percent    | 0.00
-approx_tuple_count        | 40000
-approx_tuple_len          | 2089632
-approx_tuple_percent      | 79.96
-approx_dead_tuple_count   | 0
-approx_dead_tuple_len     | 0
-approx_dead_tuple_percent | 0.00
-approx_free_space         | 523616
-approx_free_percent       | 20.04
-deep_scanned              | f
-deep_evaluated_at         | 
-deep_table_len            | 
-deep_tuple_count          | 
-deep_tuple_len            | 
-deep_tuple_percent        | 
-deep_dead_tuple_count     | 
-deep_dead_tuple_len       | 
-deep_dead_tuple_percent   | 
-deep_free_space           | 
-deep_free_percent         | 
-total_bloat_kb            | 511.34
-total_bloat_pct           | 20.04
-requires_vf               | t
--[ RECORD 4 ]-------------+------------------------------
-triage_id                 | 269
-evaluation_date           | 2026-08-26
-schema_name               | lab
-table_name                | demo_escudo_historial
-approx_scanned            | t
-approx_evaluated_at       | 2026-08-26 00:33:06.183404+00
-approx_table_len          | 4825088
-approx_scanned_percent    | 0.00
-approx_tuple_count        | 40001
-approx_tuple_len          | 2418976
-approx_tuple_percent      | 50.13
-approx_dead_tuple_count   | 0
-approx_dead_tuple_len     | 0
-approx_dead_tuple_percent | 0.00
-approx_free_space         | 2406112
-approx_free_percent       | 49.87
-deep_scanned              | f
-deep_evaluated_at         | 
-deep_table_len            | 
-deep_tuple_count          | 
-deep_tuple_len            | 
-deep_tuple_percent        | 
-deep_dead_tuple_count     | 
-deep_dead_tuple_len       | 
-deep_dead_tuple_percent   | 
-deep_free_space           | 
-deep_free_percent         | 
-total_bloat_kb            | 2349.72
-total_bloat_pct           | 49.87
-requires_vf               | t
-
-```
 
 #### Inyección Manual de Histórico (Simulación de 5 Días de Degradación)
 
@@ -422,7 +277,7 @@ FROM maint.pgstattuple, generate_series(1, 4) i
 WHERE evaluation_date = CURRENT_DATE
 ON CONFLICT (evaluation_date, schema_name, table_name) DO NOTHING;
 
-
+update maint.pgstattuple set requires_vf = false where table_name != 'demo_heavy_updates';
 ```
 
 #### Consulta de Confirmación del Radar:
@@ -441,28 +296,29 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
 ```text
  evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
 -----------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
- 2026-08-22      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
- 2026-08-23      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
- 2026-08-24      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
- 2026-08-25      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
- 2026-08-26      | lab         | demo_extreme_bloat    |      239901.19 |         234.28 |           89.96 | t
- 2026-08-22      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | f
- 2026-08-23      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | f
- 2026-08-24      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | f
- 2026-08-25      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | f
- 2026-08-26      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | f
- 2026-08-22      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-08-23      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-08-24      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-08-25      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-08-26      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-08-22      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-08-23      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-08-24      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-08-25      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-08-26      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
-(20 rows)
+ 2026-09-10      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
+ 2026-09-11      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
+ 2026-09-12      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
+ 2026-09-13      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
+ 2026-09-14      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
 
+ 2026-09-10      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+ 2026-09-11      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+ 2026-09-12      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+ 2026-09-13      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+ 2026-09-14      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+
+ 2026-09-10      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-09-11      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-09-12      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-09-13      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-09-14      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
+ 2026-09-10      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
+ 2026-09-11      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
+ 2026-09-12      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
+ 2026-09-13      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
+ 2026-09-14      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
+(20 rows)
 ```
 
 
@@ -507,7 +363,6 @@ CALL maint.sp_orchestrate_vacuum_full(
 );
 
 SELECT * FROM maint.vacuum_full_tasks;
-
 ```
 
 **Salida Esperada:**
@@ -516,27 +371,27 @@ INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetr�
 INFO:  =========================================================
 INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.9 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 3
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 8
 INFO:  =========================================================
 INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0 - EXT: 1.4)
-INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | KILL_CUTOFF: f | FORCE_MB: DESACTIVADO
-INFO:  PRE-VALIDACIÓN DISCO: 303 GB | MARGEN: 30 GB | WAL_FACTOR: 2.0 | TARGET_DBS: -1
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: 14:09:41.456652 | KILL_CUTOFF: t | FORCE_MB: DESACTIVADO
+INFO:  PRE-VALIDACIÓN DISCO: 200 GB | MARGEN: 30 GB | WAL_FACTOR: 2.0 | TARGET_DBS: -1
 INFO:  =========================================================
-WARNING:      [X] DISK SHIELD (OMITIDO): lab.demo_extreme_bloat | Formula: ((Heap: 2.55 GB + Index: 0.63 GB) * WAL: 2.0) = 6.36 GB Req. | Disponible tras op: -6.33 GB
+WARNING:      [X] DISK SHIELD (OMITIDO): lab.demo_heavy_updates | Formula: ((Heap: 0.01 GB + Index: 0.01 GB) * WAL: 2.0) = 0.03 GB Req. | Disponible tras op: -102.54 GB
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 5 | Procesadas: 0 / 1
-INFO:  Tiempo Total: 00:00:02.279276
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 3 | Procesadas: 0 / 1
+INFO:  Tiempo Total: 00:00:02.27487
 INFO:  =========================================================
 CALL
 
  
 -[ RECORD 1 ]------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-task_id            | 1
-job_id             | 5
+task_id            | 2
+job_id             | 3
 schema_name        | lab
-table_name         | demo_extreme_bloat
-bloat_pct          | 89.96
-bloat_kb           | 23989588.69
+table_name         | demo_heavy_updates
+bloat_pct          | 49.81
+bloat_kb           | 7614.53
 sustained_days_met | 5
 old_relfilenode    | 
 new_relfilenode    | 
@@ -544,52 +399,112 @@ status             | SKIPPED_INSUFFICIENT_DISK_SPACE
 child_pid          | 
 child_cookie       | 
 started_at         | 
-ended_at           | 2026-09-09 11:29:56.535505-07
-error_log          | SKIPPED: Insufficient disk space for lab.demo_extreme_bloat. Peak required (Heap+Indexes+WAL): 6.36 GB. Available after operation: -6.33 GB. Required safety margin: 30.00 GB. Checked DBs: ALL (-1).
-
+ended_at           | 2026-09-14 14:09:26.724512-07
+error_log          | SKIPPED: Insufficient disk space for lab.demo_heavy_updates. Peak required (Heap+Indexes+WAL): 0.03 GB. Available after operation: -102.54 GB. Required safety margin: 30.00 GB. Checked DBs: ALL (-1).
 
 ```
 
 
+
+## Prueba de p_cutoff_time y p_kill_active_on_cutoff
+Se ocuparan dos terminales A y B 
+
+### En la terminal A ejecutamos lo siguientes
+Esto bloqueara la tabla por completo lo cual impedira que el orquestador se bloquee y se quede esperando que la tabla se bloquee. 
+```sql
 update maint.config set setting = '1000' where name = 'disk_total_size_gb';
+BEGIN;
+LOCK TABLE lab.demo_heavy_updates IN SHARE UPDATE EXCLUSIVE MODE;
+SELECT clock_timestamp()::time;
+```
+
+### En la terminal B ejecutamos lo siguientes
+Este sumara 15Seg extras en p_cutoff_time para que el orquestador se cierre y tumbe los procesos gracias a p_kill_active_on_cutoff
+
+```text
+CALL maint.sp_orchestrate_vacuum_full(
+    p_scope               => 'SMART_USER',
+    p_profile             => 'SMART',
+    p_parallel_workers    => 1,
+    p_cutoff_time         =>   (clock_timestamp()::time + INTERVAL '15 seconds')::TIME,
+    p_kill_active_on_cutoff => TRUE,
+    p_verbose             => TRUE,
+    p_bloat_pct_threshold => 40.00,
+    p_bloat_mb_threshold  => 50.00,
+    p_threshold_operator => 'OR',
+    p_sustained_days      => 5,
+    p_min_table_mb        => 0.00,
+    p_force_bloat_mb      => NULL,        -- Desactivado para forzar la validación de días
+    p_enable_deep_scan    => FALSE,
+    p_keep_history        => TRUE
+);
+```
+
+**Salida Esperada:**
+```
+INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
+INFO:  =========================================================
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.9 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
+INFO:  =========================================================
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 6
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0 - EXT: 1.4)
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: 12:57:45.167128 | KILL_CUTOFF: t | FORCE_MB: DESACTIVADO
+INFO:  PRE-VALIDACIÓN DISCO: DESACTIVADO (-1) GB | MARGEN: 30 GB | WAL_FACTOR: 2.0 | TARGET_DBS: -1
+INFO:  =========================================================
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1424589 -> lab.demo_heavy_updates (OLD NODE: 1852857) | Bloat: 7614.53 KB | Dias: 5
+WARNING:  [KILL CUTOFF] Abortado forzosamente VACUUM FULL en lab.demo_heavy_updates (PID: 1424589)
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 1 | Procesadas: 0 / 1
+INFO:  Tiempo Total: 00:00:16.790141
+INFO:  =========================================================
+CALL
+```
 
 
 
+### En la terminal B o A ejecutamos lo siguientes
+
+```SQL
+select * from maint.vacuum_full_tasks;
+select relname,oid,relfilenode from pg_class where relname = 'demo_heavy_updates';
+```
+**Salida Esperada:**
+```
+-[ RECORD 1 ]------+---------------------------------------------------------------------------
+task_id            | 1
+job_id             | 1
+schema_name        | lab
+table_name         | demo_heavy_updates
+bloat_pct          | 49.81
+bloat_kb           | 7614.53
+sustained_days_met | 5
+old_relfilenode    | 1852857
+new_relfilenode    | 
+status             | ABORTED_BY_CUTOFF
+child_pid          | 1424589
+child_cookie       | 
+started_at         | 2026-09-14 12:57:30.430827-07
+ended_at           | 2026-09-14 12:57:46.961064-07
+error_log          | Cirugía abortada forzosamente por haber alcanzado el Cutoff Time estricto.
+
+
+      relname       |   oid   | relfilenode 
+--------------------+---------+-------------
+ demo_heavy_updates | 1852857 |     1852857
+(1 row)
+```
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+ 
 ---
 
 ### 📍 ESCENARIO 2: MANTENIMIENTO SMART CON HISTORIAL Y VERIFICACIÓN FÍSICA
 
 Ejecutamos `sp_orchestrate_vacuum_full` en modo `SMART`. Evaluará las tablas de usuario que cumplan los umbrales históricos acumulados durante los 5 días.
 
-* `demo_extreme_bloat` debe procesarse por superar holgadamente el *bloat*.
+* `demo_heavy_updates` debe procesarse por superar holgadamente el *bloat*.
 * `demo_escudo_historial` **debe ser omitida** por estar en la lista negra (`is_ignored = TRUE`).
 
 ```sql
@@ -600,7 +515,7 @@ CALL maint.sp_orchestrate_vacuum_full(
     p_cutoff_time         => NULL,
     p_kill_active_on_cutoff => FALSE,
     p_verbose             => TRUE,
-    p_bloat_pct_threshold => 50.00,
+    p_bloat_pct_threshold => 40.00,
     p_bloat_mb_threshold  => 50.00,
     p_threshold_operator => 'OR',
     p_sustained_days      => 5,
@@ -613,22 +528,22 @@ CALL maint.sp_orchestrate_vacuum_full(
 ```
 
 **Salida Esperada:**
-
 ```text
 INFO:  [RADAR] Ejecutando sp_pgstattuple síncronamente para refrescar telemetría...
 INFO:  =========================================================
-INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.4 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
+INFO:  [DBA SQUAD] RADAR DE TRIAGE DIARIO (V3.4.9 - LOGIC: OR | THRESHOLD: 51200.00 KB | FORCE: DESACTIVADO)
 INFO:  =========================================================
-INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, Requires VF: 5
+INFO:  [✓] TRIAGE FINALIZADO. Evaluadas: 9, Deep Scans: 0, requires VF: 8
 INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.4)
-INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | FORCE_MB: DESACTIVADO
+INFO:  [DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V3.6.0 - EXT: 1.4)
+INFO:  ALCANCE: SMART_USER | MODO: SMART | HILOS: 1 | CUTOFF: SIN LIMITE | KILL_CUTOFF: f | FORCE_MB: DESACTIVADO
+INFO:  PRE-VALIDACIÓN DISCO: 1000 GB | MARGEN: 30 GB | WAL_FACTOR: 2.0 | TARGET_DBS: -1
 INFO:  =========================================================
-INFO:      [>] LANZANDO [VACUUM FULL] PID 1010119 -> lab.demo_extreme_bloat (OLD NODE: 1807252) | Bloat: 239901.19 KB | Dias: 5
-INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_extreme_bloat (NODE: 1807252 -> 1807342)
+INFO:      [>] LANZANDO [VACUUM FULL] PID 1432455 -> lab.demo_heavy_updates (OLD NODE: 1852857) | Bloat: 7614.53 KB | Dias: 5
+INFO:      [✓] CIRUGIA CONFIRMADA -> lab.demo_heavy_updates (NODE: 1852857 -> 1853022)
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 3 | Procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:02.029293
+INFO:  [✓] ORQUESTACION QUIRURGICA FINALIZADA. Job 5 | Procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:02.273208
 INFO:  =========================================================
 CALL
 ```
