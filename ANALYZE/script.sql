@@ -400,7 +400,7 @@ BEGIN
                 COMMIT;
             END LOOP;
 
-            IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
+            IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN
                 UPDATE maint.analyze_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' 
                 WHERE job_id = v_job_id AND stage_number = v_current_stage AND status = 'PENDING';
                 COMMIT;
@@ -414,7 +414,7 @@ BEGIN
             END IF;
 
             WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
-                IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
+                IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN EXIT; END IF;
 
                 SELECT task_id, schema_name, table_name INTO v_task_id, v_schema, v_table
                 FROM maint.analyze_tasks
@@ -459,7 +459,7 @@ BEGIN
             PERFORM pg_sleep(1);
         END LOOP;
 
-        IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
+        IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN
             IF p_verbose THEN RAISE WARNING '[ABORT] Ventana de mantenimiento excedida. Abortando fases restantes.'; END IF;
             EXIT; 
         END IF;
