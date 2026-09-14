@@ -604,7 +604,7 @@ BEGIN
         -- =====================================================================
         -- CONTROL DE CUTOFF TIME CON VÁLVULA DE ANIQUILACIÓN ACTIVA (V3.5.0)
         -- =====================================================================
-        IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN
+        IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN
             
             -- A. Inactivar tareas PENDING inmediatamente
             UPDATE maint.vacuum_full_tasks 
@@ -668,7 +668,7 @@ BEGIN
 
         -- D. DESPACHADOR ENRIQUECIDO POLIMÓRFICO (Estrategia Snowball: Bloat KB ASC)
         WHILE v_active_workers < p_parallel_workers AND v_pending_tasks > 0 LOOP
-            IF p_cutoff_time IS NOT NULL AND LOCALTIME >= p_cutoff_time THEN EXIT; END IF;
+            IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN EXIT; END IF;
 
             SELECT task_id, schema_name, table_name, bloat_kb, sustained_days_met 
             INTO v_task_id, v_schema, v_table, v_bloat_kb_eval, v_days_met 
