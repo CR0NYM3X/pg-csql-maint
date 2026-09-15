@@ -379,6 +379,7 @@ DECLARE
     v_guc_param RECORD;
     v_target_setting TEXT;
     v_vacuum_sql TEXT;
+    v_guc_final_settings JSONB := '{}'::jsonb;
 
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
@@ -476,7 +477,8 @@ BEGIN
 
         -- Inyección en la memoria de la sesión local (is_local = true)
         -- Los subprocesos pg_background HEREDAN este valor al ser lanzados por pg_background_launch
-        PERFORM pg_catalog.set_config(v_guc_param.name, v_target_setting, true);
+        -- PERFORM pg_catalog.set_config(v_guc_param.name, v_target_setting, true);
+        v_guc_final_settings := jsonb_set(v_guc_final_settings, array[v_guc_param.name], to_jsonb(v_target_setting));
     END LOOP;
     -----------------
 
@@ -883,6 +885,14 @@ BEGIN
                 SET status = 'RUNNING', started_at = clock_timestamp(), old_relfilenode = v_old_node 
                 WHERE task_id = v_task_id; 
                 COMMIT;
+
+                -- =====================================================================
+                -- ¡REAFIRMACIÓN VITAL DE MEMORIA GUC! (DEFENSA POST-COMMIT)
+                -- El COMMIT anterior purga la memoria is_local=true. Restauramos desde el JSONB.
+                -- =====================================================================
+                FOR v_guc_param IN SELECT key, value FROM jsonb_each_text(v_guc_final_settings) LOOP
+                    PERFORM pg_catalog.set_config(v_guc_param.key, v_guc_param.value, true);
+                END LOOP;
 
                 -- 2. Disparo atómico en pg_background (Heredando la memoria de sesión)
                 IF v_is_v2 THEN
