@@ -27,25 +27,39 @@ CREATE EXTENSION IF NOT EXISTS pg_background;
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.config (
     config_id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
     setting VARCHAR(255) NOT NULL,
+    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL', -- 'ALL', 'VACUUM', 'VACUUM_FULL', 'ANALYZE', 'REINDEX'
     unit VARCHAR(50) NULL,
     setting_desc TEXT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    
+    CONSTRAINT uq_maint_config_name_action UNIQUE (name, maintenance_action),
+    CONSTRAINT chk_maint_config_action CHECK (
+        maintenance_action IN ('ALL', 'VACUUM', 'VACUUM_FULL', 'ANALYZE', 'REINDEX')
+    )
 );
 
--- Inserción idempotente de parámetros operativos, ámbito Multi-DB e interruptores de seguridad
-INSERT INTO maint.config (name, setting, unit, setting_desc) 
+COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para I/O, Workers, Ámbito Multi-DB y GUC Timeouts por Módulo.';
+COMMENT ON COLUMN maint.config.maintenance_action IS 'Acción o módulo de mantenimiento al que aplica esta regla (ALL, VACUUM_FULL, REINDEX, etc.).';
+
+-- Inserción idempotente de parámetros operativos, ámbito Multi-DB, interruptores de seguridad y GUC Defaults
+INSERT INTO maint.config (name, setting, maintenance_action, unit, setting_desc) 
 VALUES 
-  ('max_parallel_vacuum_full_workers', '2', 'workers', 'Límite máximo dinámico de workers concurrentes para cirugías'),
-  ('disk_total_size_gb', '-1', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
-  ('disk_safety_margin_gb', '30', 'GB', 'Margen de seguridad intocable en disco (Techo de Acero)'),
-  ('wal_amplification_factor', '2.0', 'ratio', 'Factor de amplificación WAL (2.0 GCP/On-Premise, 1.0 Aurora/Decoupled)'),
-  ('target_databases_for_disk_check', '-1', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)')
-ON CONFLICT (name) DO NOTHING;
+  ('max_parallel_vacuum_full_workers', '2',  'VACUUM_FULL', 'workers', 'Límite máximo de workers concurrentes'),
+  ('disk_total_size_gb',              '-1',  'ALL', 'GB', 'Capacidad total de disco. El valor -1 desactiva la pre-validación de espacio'),
+  ('disk_safety_margin_gb',           '30',  'ALL', 'GB', 'Margen de seguridad intocable en disco (Techo de Acero)'),
+  ('wal_amplification_factor',        '2.0', 'ALL', 'ratio', 'Factor de amplificación WAL (2.0 GCP/On-Premise, 1.0 Aurora/Decoupled)'),
+  ('target_databases_for_disk_check', '-1',  'ALL', 'text', 'Bases de datos a sumar para espacio: -1 (Todas), current_database (Solo actual), o lista separada por comas (db1,db2)'),
+  -- [NUEVO V3.6.0 GUC DEFAULTS AMBIENTALIZADOS]
+  ('lock_timeout',                    '30s',   'VACUUM_FULL', 'time', 'Tiempo límite por defecto para adquisición de candados en VACUUM FULL'),
+  ('statement_timeout',                '0',    'ALL', 'time', 'Tiempo límite de ejecución por defecto para DDLs de mantenimiento (0 = Ilimitado)'),
+  ('idle_session_timeout',             '0',    'ALL', 'time', 'Sanitización contra desconexiones prematuras de la sesión orquestadora'),
+  ('idle_in_transaction_session_timeout', '0', 'ALL', 'time', 'Sanitización contra cortes transaccionales en espera')
+ON CONFLICT (name, maintenance_action) DO NOTHING;
 
-COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
 
+ 
 -- =========================================================================================
 -- 1. TABLA PADRE: Orquestación Global de Trabajos (Maestra Unificada)
 -- =========================================================================================
@@ -361,6 +375,11 @@ DECLARE
     v_peak_required_gb NUMERIC;
     v_db_size_gb NUMERIC;
     v_free_disk_gb NUMERIC;
+
+    v_guc_param RECORD;
+    v_target_setting TEXT;
+    v_vacuum_sql TEXT;
+
 BEGIN
     PERFORM pg_catalog.set_config('client_min_messages', 'notice', false);
     PERFORM pg_catalog.set_config('search_path', 'maint, public, pg_temp', true);
@@ -381,7 +400,7 @@ BEGIN
     -- =====================================================================
     -- 0.2 PRE-FLIGHT CHECK: INTERCEPCIÓN DINÁMICA DE RAM Y RECURSOS (VANGUARD V3.6.0)
     -- =====================================================================
-    FOR v_param IN (
+    /*FOR v_param IN (
         SELECT name, setting 
         FROM pg_settings 
         WHERE (
@@ -396,7 +415,49 @@ BEGIN
 
     IF array_length(v_changed_params, 1) > 0 THEN
         COMMIT; -- Forzamos commit para que los workers (pg_background) lean la RAM asignada
-    END IF;
+    END IF; */
+
+    -- =====================================================================
+    -- 0.2 PRE-FLIGHT CHECK: INTERCEPCIÓN Y SANITIZACIÓN GUC TOTAL (V3.6.0)
+    -- =====================================================================
+    -- Iteramos sobre TODOS los parámetros de mantenimiento y sesión del usuario
+    FOR v_guc_param IN (
+        SELECT name, setting, reset_val
+        FROM pg_settings 
+        WHERE (
+            (name ILIKE '%vacuum%' AND context = 'user')
+            OR (name IN ('max_parallel_maintenance_workers', 'maintenance_work_mem', 'lock_timeout', 'statement_timeout', 'idle_session_timeout', 'idle_in_transaction_session_timeout') AND context = 'user')
+        )
+    ) LOOP
+        -- PRIORIDAD 1: Si el usuario modificó explícitamente el parámetro en su sesión antes de llamar
+        IF v_guc_param.setting IS DISTINCT FROM v_guc_param.reset_val THEN
+            v_target_setting := v_guc_param.setting;
+        ELSE
+            -- PRIORIDAD 2: Buscar si existe una regla específica configurada en maint.config
+            SELECT setting INTO v_target_setting 
+            FROM maint.config 
+            WHERE name = v_guc_param.name AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+            ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END 
+            LIMIT 1;
+
+            -- PRIORIDAD 3: Sanitización por defecto de seguridad si no existe en maint.config
+            IF v_target_setting IS NULL THEN
+                IF v_guc_param.name = 'lock_timeout' THEN
+                    v_target_setting := '30s';
+                ELSIF v_guc_param.name IN ('statement_timeout', 'idle_session_timeout', 'idle_in_transaction_session_timeout') THEN
+                    v_target_setting := '0';
+                ELSE
+                    v_target_setting := v_guc_param.setting; -- Mantiene el valor base de la sesión
+                END IF;
+            END IF;
+        END IF;
+
+        -- Inyección en la memoria de la sesión local (is_local = true)
+        -- Los subprocesos pg_background HEREDAN este valor al ser lanzados por pg_background_launch
+        PERFORM pg_catalog.set_config(v_guc_param.name, v_target_setting, true);
+    END LOOP;
+    -----------------
+
 
     -- Pre-flight checks de Infraestructura
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_background') THEN
@@ -566,7 +627,7 @@ BEGIN
     -- 4. Salida Temprana
     IF v_total_tasks = 0 THEN
         UPDATE maint.jobs SET status = 'COMPLETED', ended_at = clock_timestamp(), tables_processed = 0 WHERE job_id = v_job_id;
-        IF array_length(v_changed_params, 1) > 0 THEN FOR i IN 1 .. array_length(v_changed_params, 1) LOOP EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]); END LOOP; END IF;
+        -- IF array_length(v_changed_params, 1) > 0 THEN FOR i IN 1 .. array_length(v_changed_params, 1) LOOP EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]); END LOOP; END IF;
         COMMIT; 
         IF p_verbose THEN RAISE INFO '[✓] ORQUESTACION FINALIZADA. Job % | Procesadas: 0 / 0 (Sin tablas que requieran cirugia)', v_job_id; END IF; 
         RETURN;
@@ -793,24 +854,27 @@ BEGIN
                     END IF;
                 END IF;
                 -- =====================================================================================
+               -- 1. Construcción pura y limpia de la orden DDL
+                v_vacuum_sql := format('VACUUM FULL %I.%I;', v_schema, v_table);
 
                 UPDATE maint.vacuum_full_tasks 
                 SET status = 'RUNNING', started_at = clock_timestamp(), old_relfilenode = v_old_node 
                 WHERE task_id = v_task_id; 
                 COMMIT;
 
-                -- [LANZAMIENTO DINÁMICO POLIMÓRFICO]: Extracción limpia directamente en la cláusula INTO
+                -- 2. Disparo atómico en pg_background (Heredando la memoria de sesión)
                 IF v_is_v2 THEN
                     EXECUTE 'SELECT pid, cookie FROM public.pg_background_launch($1)' 
                     INTO v_child_pid, v_child_cookie 
-                    USING format('VACUUM FULL %I.%I;', v_schema, v_table);
+                    USING v_vacuum_sql;
                 ELSE
                     EXECUTE 'SELECT public.pg_background_launch($1)' 
                     INTO v_child_pid 
-                    USING format('VACUUM FULL %I.%I;', v_schema, v_table);
+                    USING v_vacuum_sql;
                     
                     v_child_cookie := NULL;
                 END IF;
+
 
                 UPDATE maint.vacuum_full_tasks 
                 SET child_pid = v_child_pid, child_cookie = v_child_cookie 
@@ -843,7 +907,7 @@ BEGIN
     END IF;
 
     IF NOT p_keep_history THEN DELETE FROM maint.vacuum_full_tasks WHERE job_id = v_job_id; END IF;
-    IF array_length(v_changed_params, 1) > 0 THEN FOR i IN 1 .. array_length(v_changed_params, 1) LOOP EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]); END LOOP; END IF;
+    -- IF array_length(v_changed_params, 1) > 0 THEN FOR i IN 1 .. array_length(v_changed_params, 1) LOOP EXECUTE format('ALTER ROLE %I RESET %I', current_user, v_changed_params[i]); END LOOP; END IF;
     COMMIT;
 
     IF p_verbose THEN 
