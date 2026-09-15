@@ -391,11 +391,33 @@ BEGIN
     END IF;
 
     -- 0.1 Lectura de Configuración de Instancia Multi-DB (V3.6.0)
+    /*
     SELECT setting::INT INTO v_max_allowed_workers FROM maint.config WHERE name = 'max_parallel_vacuum_full_workers';
     SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.config WHERE name = 'disk_total_size_gb';
     SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.config WHERE name = 'disk_safety_margin_gb';
     SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.config WHERE name = 'wal_amplification_factor';
     SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.config WHERE name = 'target_databases_for_disk_check';
+    */
+    SELECT setting::INT INTO v_max_allowed_workers FROM maint.config 
+    WHERE name = 'max_parallel_vacuum_full_workers' AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+    ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END LIMIT 1;
+
+    SELECT setting::NUMERIC INTO v_disk_total_size_gb FROM maint.config 
+    WHERE name = 'disk_total_size_gb' AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+    ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END LIMIT 1;
+
+    SELECT setting::NUMERIC INTO v_disk_safety_margin_gb FROM maint.config 
+    WHERE name = 'disk_safety_margin_gb' AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+    ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END LIMIT 1;
+
+    SELECT setting::NUMERIC INTO v_wal_amplification_factor FROM maint.config 
+    WHERE name = 'wal_amplification_factor' AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+    ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END LIMIT 1;
+
+    SELECT COALESCE(setting, '-1') INTO v_target_dbs_setting FROM maint.config 
+    WHERE name = 'target_databases_for_disk_check' AND maintenance_action IN ('VACUUM_FULL', 'ALL') 
+    ORDER BY CASE WHEN maintenance_action = 'VACUUM_FULL' THEN 1 ELSE 2 END LIMIT 1;
+
 
     -- =====================================================================
     -- 0.2 PRE-FLIGHT CHECK: INTERCEPCIÓN DINÁMICA DE RAM Y RECURSOS (VANGUARD V3.6.0)
