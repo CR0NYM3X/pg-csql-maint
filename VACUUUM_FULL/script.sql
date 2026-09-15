@@ -113,37 +113,6 @@ CREATE TABLE IF NOT EXISTS maint.filters (
     )
 );
 
--- Migración e integración idempotente desde la estructura V3.x a V4.0.0 si la tabla ya existía
-DO $$
-BEGIN
-    -- 1. Agregar columna filter_type si no existe
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'filter_type'
-    ) THEN
-        ALTER TABLE maint.filters ADD COLUMN filter_type VARCHAR(20) NOT NULL DEFAULT 'CUSTOM';
-    END IF;
-
-    -- 2. Agregar columna action_params si no existe
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'action_params'
-    ) THEN
-        ALTER TABLE maint.filters ADD COLUMN action_params JSONB NULL;
-    END IF;
-
-    -- 3. Migrar valores legacy is_ignored / force_maintenance si existen las columnas
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'is_ignored'
-    ) THEN
-        EXECUTE 'UPDATE maint.filters SET filter_type = ''EXCLUDE'' WHERE is_ignored = TRUE;';
-        EXECUTE 'UPDATE maint.filters SET filter_type = ''FORCE'' WHERE force_maintenance = TRUE AND COALESCE(is_ignored, FALSE) = FALSE;';
-        
-        ALTER TABLE maint.filters DROP COLUMN IF EXISTS is_ignored;
-        ALTER TABLE maint.filters DROP COLUMN IF EXISTS force_maintenance;
-    END IF;
-END $$;
 
 -- Índice GIN para acelerar búsquedas y filtros dentro de la estructura JSONB
 CREATE INDEX IF NOT EXISTS idx_filters_action_params_gin 
@@ -167,6 +136,7 @@ CREATE TRIGGER trg_filters_audit
 COMMENT ON TABLE maint.filters IS 'Control maestro unificado V4.0.0. Soporta conservación y reutilización de action_params JSONB.';
 COMMENT ON COLUMN maint.filters.filter_type IS 'Tipo de regla: EXCLUDE (Regla 1 - NUNCA procesar), FORCE (Regla 2 - SIEMPRE procesar), CUSTOM (Regla 3 - Evaluar JSONB/Global).';
 COMMENT ON COLUMN maint.filters.action_params IS 'Parámetros JSONB específicos. Se conservan intactos al cambiar a EXCLUDE o FORCE para su posterior reutilización.';
+
 
 -- =========================================================================================
 -- 4. TABLA DE TELEMETRÍA FÍSICA: maint.pgstattuple (Granularidad en Kilobytes)
@@ -229,19 +199,11 @@ CREATE TABLE IF NOT EXISTS maint.vacuum_full_tasks (
     error_log TEXT
 );
 
--- Migración idempotente en caso de que la tabla ya existiera previamente
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'vacuum_full_tasks' AND column_name = 'child_cookie'
-    ) THEN 
-        ALTER TABLE maint.vacuum_full_tasks ADD COLUMN child_cookie BIGINT; 
-    END IF; 
-END $$;
+
 
 COMMENT ON COLUMN maint.vacuum_full_tasks.old_relfilenode IS 'Firma física del archivo en disco antes del VACUUM FULL.';
 COMMENT ON COLUMN maint.vacuum_full_tasks.new_relfilenode IS 'Firma física del archivo en disco después del VACUUM FULL. Debe cambiar obligatoriamente para certificar el éxito.';
+
 
 -- =========================================================================================
 -- 6. PROCEDIMIENTO: RADAR DE TRIAGE (maint.sp_pgstattuple V4.0.0)
