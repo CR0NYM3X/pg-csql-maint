@@ -113,34 +113,6 @@ CREATE TABLE IF NOT EXISTS maint.filters (
     )
 );
 
--- Migración e integración idempotente desde la estructura V3.x a V4.0.0
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'filter_type'
-    ) THEN
-        ALTER TABLE maint.filters ADD COLUMN filter_type VARCHAR(20) NOT NULL DEFAULT 'CUSTOM';
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'action_params'
-    ) THEN
-        ALTER TABLE maint.filters ADD COLUMN action_params JSONB NULL;
-    END IF;
-
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'filters' AND column_name = 'is_ignored'
-    ) THEN
-        EXECUTE 'UPDATE maint.filters SET filter_type = ''EXCLUDE'' WHERE is_ignored = TRUE;';
-        EXECUTE 'UPDATE maint.filters SET filter_type = ''FORCE'' WHERE force_maintenance = TRUE AND COALESCE(is_ignored, FALSE) = FALSE;';
-        
-        ALTER TABLE maint.filters DROP COLUMN IF EXISTS is_ignored;
-        ALTER TABLE maint.filters DROP COLUMN IF EXISTS force_maintenance;
-    END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_filters_action_params_gin 
 ON maint.filters USING gin (action_params);
