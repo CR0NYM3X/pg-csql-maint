@@ -147,17 +147,6 @@ CREATE TABLE IF NOT EXISTS maint.reindex_tasks (
     error_log TEXT
 );
 
--- Migración idempotente en caso de que la tabla ya existiera previamente
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'maint' AND table_name = 'reindex_tasks' AND column_name = 'child_cookie'
-    ) THEN 
-        ALTER TABLE maint.reindex_tasks ADD COLUMN child_cookie BIGINT; 
-    END IF; 
-END $$;
-
 COMMENT ON TABLE maint.reindex_tasks IS 'Cola transaccional individual para la orquestación de REINDEX CONCURRENTLY.';
 
 CREATE INDEX IF NOT EXISTS idx_reindex_tasks_job_status_id 
