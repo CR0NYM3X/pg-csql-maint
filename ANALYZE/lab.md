@@ -113,9 +113,14 @@ COMMIT;
 INSERT INTO maint.filters (schema_name,table_name,maintenance_action,filter_type,action_params ) VALUES 
 ('lab','sesiones','ANALYZE','EXCLUDE',NULL), -- [ESCUDO ACTIVO (Regla 1)]: Exclusión Absoluta. Ignora la tabla totalmente.
 ('lab','carritos','ANALYZE','FORCE'  ,NULL), -- [PASE VIP (Regla 2)]:  Fuerza  el Mantenimiento sin importar los umbrales
-('lab', 'clientes', 'ANALYZE', 'CUSTOM', '{"threshold_pct": 1.00, "min_mod_tuples": 300}'::jsonb); -- Sobrescribe los umbrales globales: exige solo 1.00% de cambios o mínimo 300 tuplas modificadas.
+('lab', 'clientes', 'ANALYZE', 'CUSTOM', '{"threshold_pct": 1.00, "min_mod_tuples": 300, "force_mod_tuples": 500}'::jsonb); -- Sobrescribe los umbrales globales: exige solo 1.00% de cambios o mínimo 300 tuplas modificadas.
 
 ```
+
+
+
+
+
 
 ---
 
@@ -155,20 +160,41 @@ ORDER BY change_pct DESC NULLS LAST;
 
 ```
 
-#### PASO 2: Dispara el Orquestador Vanguard (Modo Visual)
 
-En este escenario solo deberia de ejecutar la tabla lab.carritos esto debido a que la tabla lab.sesiones tiene aplicado el filtro en la tabla  maint.filters
-y la columna is_ignored esta en true para le mantenimiento analyze.
+# Psuperaremos el limite de works configuado en  maint.config
+```
 
+ CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'CUSTOM_LIST',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 21,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 80,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_mod_tuples   => 18000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 18000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
+
+ERROR:  ALERTA DE SEGURIDAD I/O [RECHAZADO]: Solicitados 21 hilos para ANALYZE. El tope estricto configurado en maint.config es 20.
+CONTEXT:  PL/pgSQL function maint.sp_orchestrate_analyze(character varying,character varying,integer,boolean,numeric,integer,integer,time without time zone,boolean) line 55 at RAISE
+```
+
+
+---
+
+#### hacemos uso del scope CUSTOM
+aqui saldran lab.clientes (Custom) debe cumplir con la condicion y lab.carritos (Force) este siempre se aplicara 
 ```sql
-  CALL maint.sp_orchestrate_analyze(
-      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+
+ CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'CUSTOM_LIST',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_mod_tuples   => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_mod_tuples => 50000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
+      p_threshold_pct    => 80,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_mod_tuples   => 18000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 18000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
@@ -179,19 +205,67 @@ y la columna is_ignored esta en true para le mantenimiento analyze.
 
 ```
 INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
+INFO:  ALCANCE: CUSTOM_LIST | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:  ---------------------------------------------------------
+INFO:  >>> INICIANDO FASE 1 DE 1 <<<
+INFO:  ---------------------------------------------------------
+INFO:      [>] LANZANDO (Fase 1) PID 2322926 -> lab.clientes
+INFO:      [>] LANZANDO (Fase 1) PID 2322927 -> lab.carritos
+INFO:      [✓] SUCCESS (Fase 1) -> lab.clientes
+INFO:      [✓] SUCCESS (Fase 1) -> lab.carritos
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 5 | Tablas procesadas: 2 / 2
+INFO:  Tiempo Total: 00:00:01.022149
+INFO:  =========================================================
+CALL
+```
+
+
+----
+
+
+#### PASO 2: Dispara el Orquestador Vanguard (Modo Visual)
+
+En este escenario solo deberia de ejecutar la tabla lab.carritos esto debido a que la tabla lab.sesiones tiene aplicado el filtro en la tabla  maint.filters
+y la columna is_ignored esta en true para le mantenimiento analyze.
+
+```sql
+-- para que ya no salga lab.carritos ya que estaba forzado
+update maint.filters set filter_type = 'EXCLUDE' where table_name = 'carritos';
+
+ CALL maint.sp_orchestrate_analyze(
+      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+      p_threshold_pct    => 14,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_min_mod_tuples   => 3000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
+      p_force_mod_tuples => 18000,              -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
+      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+  );
+
+
+```
+
+**Salida esperada**
+
+```
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
 INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
 INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 878952 -> lab.carritos
-INFO:      [✓] EXITO (Fase 1) -> lab.carritos
+INFO:      [>] LANZANDO (Fase 1) PID 2326401 -> lab.pedidos
+INFO:      [✓] SUCCESS (Fase 1) -> lab.pedidos
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 2 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.017875
-INFO:  =========================================================
-CALL
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 8 | Tablas procesadas: 2 / 2
+INFO:  Tiempo Total: 00:00:01.020685
+INFO:
 
 ```
 
@@ -218,15 +292,15 @@ ORDER BY change_pct DESC NULLS LAST;
  schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
 ------------+-----------------+-------------+-------------------+------------
  lab        | sesiones        |       20000 |             18000 |      90.00
- lab        | pedidos         |       20000 |              3000 |      15.00
  lab        | logs_auditoria  |       22000 |              2000 |       9.09
  lab        | inventario      |       20000 |              1200 |       6.00
- lab        | clientes        |       20000 |               400 |       2.00
- lab        | envios          |       20000 |                 0 |       0.00
- lab        | pagos           |       20000 |                 0 |       0.00
- lab        | carritos        |       10000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
+ lab        | pagos           |       20000 |                 0 |       0.00
+ lab        | clientes        |       20000 |                 0 |       0.00
+ lab        | carritos        |       10000 |                 0 |       0.00
+ lab        | envios          |       20000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
 (10 rows)
 
 ```
@@ -242,89 +316,13 @@ tiene el un filtro en la tabla  maint.filters y la columna is_ignored esta en tr
       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
       p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 51,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
-      p_min_mod_tuples   => 1000,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_mod_tuples => 3000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
-      p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
-      p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
-  );
-
-
-```
-
-**Salida esperada**
-
-```
-INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
-INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
-INFO:  =========================================================
-INFO:  ---------------------------------------------------------
-INFO:  >>> INICIANDO FASE 1 DE 1 <<<
-INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 879190 -> lab.pedidos
-INFO:      [✓] EXITO (Fase 1) -> lab.pedidos
-INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 3 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.016517
-INFO:  =========================================================
-CALL
-
-```
-
-#### Verifica la Telemetría
-
-Corroborar la información
-
-```sql
-  SELECT
-    schemaname,
-    relname AS nombre_tabla,
-    n_live_tup AS filas_vivas,
-    n_mod_since_analyze AS filas_modificadas,
-    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct
-FROM pg_stat_user_tables
-WHERE      schemaname  = 'lab' and relname in('clientes','productos','pedidos','detalle_pedidos','pagos','envios','inventario','carritos','sesiones','logs_auditoria')
-ORDER BY change_pct DESC NULLS LAST;
-
-```
-
-**Salida esperada**
-
-```
- schemaname |  nombre_tabla   | filas_vivas | filas_modificadas | change_pct 
-------------+-----------------+-------------+-------------------+------------
- lab        | sesiones        |       20000 |             18000 |      90.00
- lab        | logs_auditoria  |       22000 |              2000 |       9.09
- lab        | inventario      |       20000 |              1200 |       6.00
- lab        | clientes        |       20000 |               400 |       2.00
- lab        | pagos           |       20000 |                 0 |       0.00
- lab        | envios          |       20000 |                 0 |       0.00
- lab        | detalle_pedidos |       20000 |                 0 |       0.00
- lab        | carritos        |       10000 |                 0 |       0.00
- lab        | pedidos         |       20000 |                 0 |       0.00
- lab        | productos       |       20000 |                 0 |       0.00
-(10 rows)
-
-```
-
-## Ejecutar ahora los que tengan 5% y minimo 1500 filas modificadas
-
-aqui unicamente deberia aplicar para la tabla lab.logs_auditoria  este porque cumple con los requisitos de minimo de filas cambiadas 1500 y mas de 5%
-, la tabla lab.inventario  no aplica esto debido a que no cumple con el minimo de filas
-
-```sql
-  CALL maint.sp_orchestrate_analyze(
-      p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-      p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
-      p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
-      p_verbose          => TRUE,               -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-      p_threshold_pct    => 5,                  -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
+      p_threshold_pct    => 10,                 -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5% de cambio)
       p_min_mod_tuples   => 1500,               -- INT     : Mínima cantidad de cambios realizar un analyze (Filtro anti-morralla) 
-      p_force_mod_tuples => 3000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
+      p_force_mod_tuples => 2000,               -- INT     : Realiza analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
       p_cutoff_time      => NULL,               -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
   );
+
 
 ```
 
@@ -332,17 +330,17 @@ aqui unicamente deberia aplicar para la tabla lab.logs_auditoria  este porque cu
 
 ```
 INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR ANALYZE VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
 INFO:  ALCANCE: SMART_USER | PERFIL: NORMAL | HILOS: 4 | FASES: 1 | CUTOFF: SIN LIMITE | HISTORIAL: t
 INFO:  =========================================================
 INFO:  ---------------------------------------------------------
 INFO:  >>> INICIANDO FASE 1 DE 1 <<<
 INFO:  ---------------------------------------------------------
-INFO:      [>] LANZANDO (Fase 1) PID 879411 -> lab.logs_auditoria
-INFO:      [✓] EXITO (Fase 1) -> lab.logs_auditoria
+INFO:      [>] LANZANDO (Fase 1) PID 2326728 -> lab.logs_auditoria
+INFO:      [✓] SUCCESS (Fase 1) -> lab.logs_auditoria
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 4 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.016955
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 9 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.016376
 INFO:  =========================================================
 CALL
 
@@ -372,17 +370,19 @@ ORDER BY change_pct DESC NULLS LAST;
 ------------+-----------------+-------------+-------------------+------------
  lab        | sesiones        |       20000 |             18000 |      90.00
  lab        | inventario      |       20000 |              1200 |       6.00
- lab        | clientes        |       20000 |               400 |       2.00
+ lab        | pedidos         |       20000 |                 0 |       0.00
  lab        | detalle_pedidos |       20000 |                 0 |       0.00
  lab        | pagos           |       20000 |                 0 |       0.00
  lab        | envios          |       20000 |                 0 |       0.00
  lab        | carritos        |       10000 |                 0 |       0.00
+ lab        | clientes        |       20000 |                 0 |       0.00
  lab        | logs_auditoria  |       22000 |                 0 |       0.00
  lab        | productos       |       20000 |                 0 |       0.00
- lab        | pedidos         |       20000 |                 0 |       0.00
 (10 rows)
 
 ```
+
+ 
 
 # Escenario : Interrupcion de  orquestador y hijo
 
