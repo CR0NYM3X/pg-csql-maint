@@ -107,10 +107,13 @@ COMMIT;
 -- ====================================================================================
 -- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
 -- ====================================================================================
-INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance, maintenance_action) VALUES 
-('lab', 'sesiones', TRUE, FALSE, 'ANALYZE'),  -- [ESCUDO ACTIVO]: Intocable.
-('lab', 'carritos', FALSE, TRUE, 'ANALYZE');      -- [PASE VIP]: Mantenimiento prioritario.
-
+-- ====================================================================================
+-- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD V4.0.0 (FILTROS CON JSONB HOMOLOGADO)
+-- ====================================================================================
+INSERT INTO maint.filters (schema_name,table_name,maintenance_action,filter_type,action_params ) VALUES 
+('lab','sesiones','ANALYZE','EXCLUDE',NULL), -- [ESCUDO ACTIVO (Regla 1)]: Exclusión Absoluta. Ignora la tabla totalmente.
+('lab','carritos','ANALYZE','FORCE'  ,NULL), -- [PASE VIP (Regla 2)]:  Fuerza  el Mantenimiento sin importar los umbrales
+('lab', 'clientes', 'ANALYZE', 'CUSTOM', '{"threshold_pct": 1.00, "min_mod_tuples": 300}'::jsonb); -- Sobrescribe los umbrales globales: exige solo 1.00% de cambios o mínimo 300 tuplas modificadas.
 
 ```
 
