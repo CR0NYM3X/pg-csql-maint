@@ -32,34 +32,48 @@ Funciona como Lista Negra y Lista VIP. Te permite bloquear o forzar mantenimient
 **Ejemplos prácticos de configuración de Filtros:**
 
 ```sql
--- RESTRICCIÓN (Lista Negra): Evitar que 'historico_logs' sea evaluada por el ANALYZE
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, is_ignored) 
-VALUES ('public', 'historico_logs', 'ANALYZE', TRUE);
+INSERT INTO maint.filters (schema_name,table_name,maintenance_action,filter_type,action_params ) VALUES 
 
--- FORZADO VIP (Lista Blanca): Obligar a analizar 'usuarios' siempre, ignorando umbrales
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
-VALUES ('public', 'usuarios', 'ANALYZE', TRUE);
+ -- [ESCUDO ACTIVO (Regla 1)]: Exclusión Absoluta. Ignora la tabla totalmente.
+('lab','sesiones','ANALYZE','EXCLUDE',NULL),
+
+ -- [PASE VIP (Regla 2)]:  Fuerza  el Mantenimiento sin importar los umbrales
+('lab','carritos','ANALYZE','FORCE'  ,NULL),
+
+-- Sobrescribe los umbrales globales: exige solo 1.00% de cambios o mínimo 300 tuplas modificadas.
+('lab', 'clientes', 'ANALYZE', 'CUSTOM', '{"threshold_pct": 1.00, "min_mod_tuples": 300, "force_mod_tuples": 500}'::jsonb); 
 
 
 ```
 
 ---
 
-## 🚦 ÁMBITOS DE COBERTURA (`p_scope`)
+### 🎯 COMPORTAMIENTO p_scope
 
-Controla qué universo de tablas entra a la cola de evaluación. Los parámetros de control de volatilidad (`p_threshold_pct` y `p_min_mod_tuples`) solo son respetados por los alcances inteligentes (`SMART`).
+Con el parche aplicado, la matriz de ejecución del orquestador queda funcionando al 100% de la siguiente manera:
 
-| Valor | Descripción | ¿Evalúa Umbrales (Volatilidad)? |
-| --- | --- | --- |
-| **`SMART_USER`** *(Default)* | Mantenimiento Quirúrgico Diario. Solo procesa tablas de usuario que crucen los umbrales de modificaciones. | ✅ **SÍ** |
-| **`ALL_USER`** | Ejecuta sobre todas las tablas de usuario, ignorando si sufrieron cambios. | ❌ **NO** |
-| **`CUSTOM_LIST`** | Solo procesa las tablas marcadas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** |
-| **`SMART_SYSTEM_USER`** | Igual que `SMART_USER`, pero evalúa también los catálogos internos de PostgreSQL. | ✅ **SÍ** |
-| **`ALL_SYSTEM_USER`** | Limpia todas las tablas de usuario y catálogos de sistema a fuerza bruta. | ❌ **NO** |
-| **`ALL_SYSTEM`** | Exclusivo para catálogos del motor (`pg_catalog`, `information_schema`). | ❌ **NO** |
+| `p_scope` | `filter_type = 'EXCLUDE'` | `filter_type = 'FORCE'` | `filter_type = 'CUSTOM'` + JSONB | Tablas no registradas |
+| --- | --- | --- | --- | --- |
+| **`CUSTOM_LIST`** | 🚫 NUNCA entra | ⚡ Entra DIRECTO | 🎯 Entra SI CUMPLE parámetro JSONB | ❌ Ignorada |
+| **`SMART_USER`** *(Default)* | 🚫 NUNCA entra | ⚡ Entra DIRECTO | 🎯 Evalúa parámetros JSONB | 📊 Evalúa parámetros globales |
+| **`ALL_USER`** | 🚫 NUNCA entra | 🔄 Procesa todo | 🔄 Procesa todo | 🔄 Procesa todo (Sin medir) |
+| **`SMART_SYSTEM_USER`** | 🚫 NUNCA entra | ⚡ Entra DIRECTO | 🎯 Evalúa parámetros JSONB | 📊 Evalúa parámetros globales |
+| **`ALL_SYSTEM_USER`** | 🚫 NUNCA entra | 🔄 Procesa todo | 🔄 Procesa todo | 🔄 Procesa todo (Sin medir) |
+| **`ALL_SYSTEM`** | 🚫 NUNCA entra | 🔄 Procesa todo (Solo sistema) | 🔄 Procesa todo (Solo sistema) | 🔄 Procesa todo (Solo sistema) |
 
----
+ 
 
+## 📋 DETALLE DE COMPORTAMIENTO POR `p_scope`
+
+* **`SMART_USER` (Default) — [Mantenimiento Quirúrgico Diario]:** Solo procesa tablas de usuario que crucen los umbrales de modificaciones (globales o JSONB). ✅ **SÍ procesa reglas CUSTOM.**
+* **`ALL_USER` — [Fuerza Bruta de Usuario]:** Ejecuta sobre todas las tablas de usuario, ignorando si sufrieron cambios. ❌ **NO mide umbrales.**
+* **`CUSTOM_LIST` — [Lista Blanca VIP / Bajo Demanda]:** Procesa exclusivamente las tablas registradas en `maint.filters` (ya sean `FORCE` o `CUSTOM` que cumplan sus reglas JSONB). ❌ **NO procesa tablas no registradas.**
+* **`SMART_SYSTEM_USER` — [Mantenimiento Quirúrgico Total]:** Igual que `SMART_USER`, pero evalúa también los catálogos internos del sistema PostgreSQL. ✅ **SÍ procesa reglas CUSTOM.**
+* **`ALL_SYSTEM_USER` — [Fuerza Bruta Total]:** Limpia todas las tablas de usuario y catálogos de sistema a fuerza bruta. ❌ **NO mide umbrales.**
+* **`ALL_SYSTEM` — [Fuerza Bruta de Catálogo]:** Exclusivo para catálogos del motor (`pg_catalog`, `information_schema`). ❌ **NO mide umbrales.**
+
+
+ ---
 ## ⚙️ PERFILES DE EJECUCIÓN (`p_profile`)
 
 | Perfil | Comportamiento Táctico |
@@ -78,11 +92,26 @@ La arquitectura es asíncrona. Nunca ejecutes el procedimiento bloqueando tu con
 **Recomendación:** Madrugadas. El orquestador limpiará su propio rastro (`p_keep_history => FALSE`) y abortará limpiamente si se excede el límite de tiempo.
 
 ```sql
-SELECT cron.schedule_in_database('vanguard_smart_analyze_daily', '0 2 * * *', 
-$$    CALL maint.sp_orchestrate_analyze(       p_scope            => 'SMART_USER',       -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')       p_profile          => 'NORMAL',           -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')       p_parallel_workers => 4,                  -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)       p_verbose          => FALSE,              -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)       p_threshold_pct    => 5.00,               -- NUMERIC : Umbral de cambios minimo para realizar un analyze (5.00 = 5\% de cambio)       p_min_mod_tuples   => 1000,               -- INT     : Requisito de Mínima cantidad de cambios de tupla para hacer un analyze (Filtro anti-morralla)        p_force_mod_tuples => 50000,              -- INT     : Fuerza un analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)       p_cutoff_time      => '05:30:00'::TIME,   -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)       p_keep_history     => TRUE                -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)   ); $$
-, 
-'mi_base_de_datos', 'postgres', true);
-
+SELECT cron.schedule_in_database(
+    'vanguard_smart_analyze_daily', 
+    '0 2 * * *', 
+    $$ 
+    CALL maint.sp_orchestrate_analyze(
+        p_scope            => 'SMART_USER',         -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+        p_profile          => 'NORMAL',             -- VARCHAR : Perfil de ejecución ('NORMAL' o 'PRELOAD')
+        p_parallel_workers => 4,                    -- INT     : Cantidad de hilos/workers en paralelo (Max concurrencia)
+        p_verbose          => FALSE,                -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+        p_threshold_pct    => 5.00,                 -- NUMERIC : Umbral de cambios mínimo para realizar un analyze (5.00 = 5% de cambio)
+        p_min_mod_tuples   => 1000,                 -- INT     : Requisito de mínima cantidad de cambios de tupla para hacer un analyze (Filtro anti-morralla)
+        p_force_mod_tuples => 50000,                -- INT     : Fuerza un analyze si tiene esta cantidad de cambios de tuplas (NULL para desactivar)
+        p_cutoff_time      => '05:30:00'::TIME,     -- TIME    : Freno de emergencia (Kill Switch) por hora límite (NULL para sin límite)
+        p_keep_history     => TRUE                  -- BOOLEAN : Retención de auditoría en analyze_tasks (FALSE = Purga efímera al finalizar)
+    ); 
+    $$, 
+    'mi_base_de_datos', 
+    'postgres', 
+    true
+);
 
 ```
 
@@ -92,11 +121,18 @@ $$    CALL maint.sp_orchestrate_analyze(       p_scope            => 'SMART_USER
 
 ```sql
 SELECT * FROM public.pg_background_launch(
-    $$       CALL maint.sp_orchestrate_analyze(           p_scope            => 'CUSTOM_LIST', -- Lista VIP (maint.filters)           p_profile          => 'PRELOAD',     -- 3 fases progresivas           p_parallel_workers => 8,             -- Máxima fuerza bruta           p_keep_history     => TRUE           -- Retener auditoría forense       );     $$
+    $$ 
+    CALL maint.sp_orchestrate_analyze(
+        p_scope            => 'CUSTOM_LIST', -- Lista VIP (maint.filters)
+        p_profile          => 'PRELOAD',     -- 3 fases progresivas
+        p_parallel_workers => 8,             -- Máxima fuerza bruta
+        p_keep_history     => TRUE           -- Retener auditoría forense
+    ); 
+    $$
 );
--- Devuelve un PID. Para monitorear: SELECT * FROM public.pg_background_result(TU_PID) AS (result TEXT);
 
-
+-- Devuelve un PID. Para monitorear: 
+-- SELECT * FROM public.pg_background_result(TU_PID) AS (result TEXT);
 ```
 
 ---
