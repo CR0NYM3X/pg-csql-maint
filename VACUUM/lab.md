@@ -64,12 +64,24 @@ DELETE FROM lab.demo_escudo_historial WHERE id < 50000; -- Generamos basura inte
 ANALYZE lab.demo_escudo_historial;
 
 -- ====================================================================================
--- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD (FILTROS)
+-- 4. CONFIGURACIÓN DEL PANEL DE SEGURIDAD V4.1.0 (FILTROS CON TRES TIPOS DE REGLA)
 -- ====================================================================================
-INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance, maintenance_action) VALUES 
-('lab', 'demo_heavy_updates', TRUE, FALSE, 'VACUUM'),  -- [ESCUDO ACTIVO]: Intocable.
-('lab', 'demo_extreme_bloat', FALSE, TRUE, 'VACUUM');      -- [PASE VIP]: Mantenimiento prioritario.
+INSERT INTO maint.filters (
+    schema_name, 
+    table_name, 
+    maintenance_action, 
+    filter_type, 
+    action_params
+) VALUES 
+-- 1. [ESCUDO ACTIVO (Regla 1)]: Exclusión Absoluta. Ignora la tabla totalmente en TODOS los scopes.
+('lab', 'demo_heavy_updates', 'VACUUM', 'EXCLUDE', NULL),
 
+-- 2. [PASE VIP / LISTA BLANCA (Regla 2)]: Fuerza Bruta. Mantenimiento prioritario inmediato.
+('lab', 'demo_extreme_bloat', 'VACUUM', 'FORCE', NULL),
+
+-- 3. [PARÁMETROS PERSONALIZADOS JSONB (Regla 3)]: Evaluación Dinámica por Umbral y Fuerza Bruta JSONB.
+-- Sobrescribe umbrales globales e incluye parámetros de fuerza bruta dentro del mismo objeto JSONB.
+('lab', 'demo_custom_table', 'VACUUM', 'CUSTOM', '{"threshold_pct": 2.00, "min_dead_tuples": 1000, "force_dead_tuples": 50000}'::jsonb);
 
 ```
 
