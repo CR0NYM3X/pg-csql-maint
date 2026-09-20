@@ -9,9 +9,10 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (VACUUM FULL)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: V4.0.0 (Grado Diamante - Jerarquía Polimórfica JSONB Sanitizada, relfilenode Checksum & Multi-DB Disk Shield)
+   VERSIÓN: V4.1.0 (Grado Diamante - Jerarquía Polimórfica JSONB Sanitizada, relfilenode Checksum & Multi-DB Disk Shield)
    ARQUITECTURA: Multi-hilo Dinámico, Resiliente, Forense, Pesimista Estricto.
 ========================================================================================= */
+
 BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS maint;
@@ -388,6 +389,7 @@ REVOKE EXECUTE ON PROCEDURE maint.sp_pgstattuple FROM PUBLIC;
 -- =========================================================================================
 -- 7. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_vacuum_full (V4.0.0 Blindado contra Corrupción)
 -- =========================================================================================
+
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
     p_scope                 VARCHAR DEFAULT 'SMART_USER',       -- 'SMART_USER', 'SMART_SYSTEM', 'SMART_SYSTEM_USER', 'CUSTOM_LIST'
     p_profile               VARCHAR DEFAULT 'SMART',            -- 'SMART' (Radar+Histórico), 'FORCE_SURGERY' (Ciego)
@@ -400,7 +402,7 @@ CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_vacuum_full(
     p_threshold_operator    VARCHAR DEFAULT 'OR',
     p_sustained_days        INT DEFAULT 5,
     p_min_table_mb          NUMERIC DEFAULT 50.00,
-    p_force_bloat_mb        NUMERIC DEFAULT NULL,              -- Bypass de emergencia en MB
+    p_force_bloat_mb        NUMERIC DEFAULT NULL,               -- Bypass de emergencia en MB
     p_enable_deep_scan      BOOLEAN DEFAULT FALSE,
     p_keep_history          BOOLEAN DEFAULT TRUE
 )
@@ -423,7 +425,7 @@ DECLARE
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
     v_force_bypass BOOLEAN := FALSE;
     
-    -- Variables para evaluación de umbrales dinámicos homologados V4.0.0
+    -- Variables para evaluación de umbrales dinámicos homologados V4.1.0
     v_effective_bloat_pct_threshold NUMERIC(12,2);
     v_effective_bloat_mb_threshold NUMERIC(14,2);
     v_effective_bloat_kb_threshold NUMERIC(14,2);
@@ -605,7 +607,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V4.0.0 HOMOLOGADO - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO '[DBA SQUAD] INICIANDO CIRUGIA MAYOR (VACUUM FULL V4.1.0 HOMOLOGADO - EXT: %)', COALESCE(v_ext_version, 'v1.x');
         RAISE INFO 'ALCANCE: % | MODO: % | HILOS: % | CUTOFF: % | KILL_CUTOFF: % | FORCE_MB: %', 
                    p_scope, v_profile_upper, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_kill_active_on_cutoff, COALESCE(p_force_bloat_mb::TEXT, 'DESACTIVADO');
         RAISE INFO 'PRE-VALIDACIÓN DISCO: % GB | MARGEN: % GB | WAL_FACTOR: % | TARGET_DBS: %', 
@@ -641,7 +643,7 @@ BEGIN
     RETURNING job_id INTO v_job_id;
     COMMIT;
 
-    -- 3. Poblar Cola V4.0.0 (Evaluación de la Jerarquía Polimórfica Homologada Sanitizada)
+    -- 3. Poblar Cola V4.1.0 (Evaluación de la Jerarquía Polimórfica Homologada Sanitizada)
     FOR r_table IN (
         SELECT t.schema_name, t.table_name, t.total_bloat_kb, t.total_bloat_pct,
                mf.filter_type, mf.action_params
@@ -651,7 +653,8 @@ BEGIN
           AND t.schema_name <> 'maint'
           AND COALESCE(mf.filter_type, 'CUSTOM') <> 'EXCLUDE' -- REGLA 1: Exclusión Absoluta
           AND (
-              (p_scope = 'CUSTOM_LIST' AND mf.filter_type = 'FORCE') OR
+              -- [CORRECCIÓN V4.1.0]: CUSTOM_LIST procesa TANTO 'FORCE' COMO 'CUSTOM'
+              (p_scope = 'CUSTOM_LIST' AND mf.filter_type IN ('FORCE', 'CUSTOM')) OR
               (p_scope = 'SMART_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR
               (p_scope = 'SMART_SYSTEM_USER') OR
               (p_scope = 'SMART_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema'))
@@ -995,6 +998,7 @@ BEGIN
     END IF;
 END;
 $$;
+
 
 REVOKE EXECUTE ON PROCEDURE maint.sp_orchestrate_vacuum_full FROM PUBLIC;
 
