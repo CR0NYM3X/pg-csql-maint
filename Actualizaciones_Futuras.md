@@ -29,7 +29,7 @@ PERFORM pg_notify(
 
 * **Impacto:** Permite que escuchas externos (un demonio en Python, un servicio en Go o una Cloud Function en GCP/AWS) capturen el canal `maint_alerts` e inyecten la alerta en Slack, PagerDuty o Teams en tiempo real.
 
- 
+ # A los proyectos "analyze" y "vacuum" agregar el mismo "Tuning de Sesión Dinámico" que tiene los proyectos "VACUUM FULL Y REINDEX"
 
 
 ## ** MATRIZ CONSOLIDADA DE LA PROPUESTA (VERSIÓN V4.0.0)**
