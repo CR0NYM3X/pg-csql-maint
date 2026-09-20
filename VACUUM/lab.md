@@ -81,7 +81,7 @@ INSERT INTO maint.filters (
 
 -- 3. [PARÁMETROS PERSONALIZADOS JSONB (Regla 3)]: Evaluación Dinámica por Umbral y Fuerza Bruta JSONB.
 -- Sobrescribe umbrales globales e incluye parámetros de fuerza bruta dentro del mismo objeto JSONB.
-('lab', 'demo_custom_table', 'VACUUM', 'CUSTOM', '{"threshold_pct": 2.00, "min_dead_tuples": 1000, "force_dead_tuples": 50000}'::jsonb);
+('lab', 'demo_custom_table', 'VACUUM', 'CUSTOM', '{"threshold_pct": 70.00, "min_dead_tuples": 5000, "force_dead_tuples": 9999}'::jsonb);
 
 ```
 
@@ -92,12 +92,13 @@ INSERT INTO maint.filters (
 En este caso se bloqueo el vacuum de la tabla demo_heavy_updates ya que esta en true la columna is_ignored
 
 ```text
-select * from  maint.filters ;
- filter_id | schema_name |     table_name     | maintenance_action | is_ignored | force_maintenance |           created_at           |           updated_at           | updated_by 
------------+-------------+--------------------+--------------------+------------+-------------------+--------------------------------+-------------------------------+------------
-         2 | lab         | demo_extreme_bloat | VACUUM             | f          | t                 | 2026-08-24 23:50:54.445931+00 | 2026-08-24 23:50:54.445931+00 | postgres2
-         1 | lab         | demo_heavy_updates | VACUUM             | t          | f                 | 2026-08-24 23:50:54.445692+00 | 2026-08-24 23:50:54.445692+00 | postgres2
-
+select schema_name,table_name,maintenance_action,filter_type ,action_params from  maint.filters ;
+ schema_name |     table_name     | maintenance_action | filter_type |                                action_params                                 
+-------------+--------------------+--------------------+-------------+------------------------------------------------------------------------------
+ lab         | demo_heavy_updates | VACUUM             | EXCLUDE     | 
+ lab         | demo_extreme_bloat | VACUUM             | FORCE       | 
+ lab         | demo_vip_facturas  | VACUUM             | CUSTOM      | {"threshold_pct": 70.00, "min_dead_tuples": 5000, "force_dead_tuples": 9999}
+(3 rows)
 ```
 
 ### Revisar los porcentajes de tuplas muertas
@@ -129,22 +130,99 @@ ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
 
 ```
 
-# Escenario 1: Mantenimiento Diario Inteligente
 
-Aqui aunque las tablas lab.demo_extreme_bloat y lab.demo_heavy_updates cumplen con las condiciones.
-pero unicamente se procesara la tabla demo_extreme_bloat  esto debido a que la tabla demo_heavy_updates tiene
-aplicado el filtro de is_ignored en la tabla maint.filters
+
+
+
+# Escenario 1: Mantenimiento Diario Inteligente
+aqui demo_extreme_bloat esta forzada por eso se hace y demo_extreme_bloat cumplio con la condicion de maint.filters el cual decia que se forza si tiene 9999 de tuplas muertas
+
 
 ```sql
----- Mantenimiento a todas las tablas Forzado
 CALL maint.sp_orchestrate_vacuum(
-    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+    p_scope          => 'CUSTOM_LIST',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
     p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
     p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
     p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
     p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
     p_threshold_pct  => 60,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
     p_min_dead_tuples   => 5000,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
+    p_force_dead_tuples => 50000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
+);
+```
+
+**Salida esperada**
+
+```text
+INFO:  =========================================================
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
+INFO:  ALCANCE: CUSTOM_LIST | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
+INFO:  =========================================================
+INFO:      [>] LANZANDO [BALANCED] PID 2337116 -> lab.demo_vip_facturas
+INFO:      [>] LANZANDO [BALANCED] PID 2337117 -> lab.demo_extreme_bloat
+INFO:      [✓] SUCCESS -> lab.demo_vip_facturas
+INFO:      [✓] SUCCESS -> lab.demo_extreme_bloat
+INFO:  ---------------------------------------------------------
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 18 | Tablas procesadas: 2 / 2
+INFO:  Tiempo Total: 00:00:01.026781
+INFO:  =========================================================
+CALL
+
+```
+
+---
+
+### Revisar los porcentajes de tuplas muertas
+
+```sql
+SELECT
+    schemaname,
+    relname AS nombre_tabla,
+    n_live_tup AS filas_vivas,
+    n_dead_tup AS filas_muertas,
+    n_mod_since_analyze AS filas_modificadas,
+    ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas_vacuum,
+    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct_analyze
+FROM pg_stat_user_tables
+WHERE      schemaname  = 'lab' and relname in('demo_extreme_bloat','demo_heavy_updates','demo_vip_facturas','demo_escudo_historial')
+ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
+
+```
+
+**Salida esperada**
+
+```text
+ schemaname |     nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
+------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
+ lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00
+ lab        | demo_escudo_historial |      100002 |         49999 |            149999 |                      33.33 |             150.00
+ lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
+ lab        | demo_vip_facturas     |       50000 |             0 |             59999 |                       0.00 |             120.00
+(4 rows)
+```
+
+
+
+
+# Escenario 1: Mantenimiento Diario Inteligente
+
+ 
+
+```sql
+
+Ahora excluimos la tabla forzada para que no salga mas.
+update maint.filters set filter_type = 'EXCLUDE' where table_name = 'demo_extreme_bloat';
+
+
+CALL maint.sp_orchestrate_vacuum(
+    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
+    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
+    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
+    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
+    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
+    p_threshold_pct  => 30,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+    p_min_dead_tuples   => 49999,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
     p_force_dead_tuples => 50000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
     p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
 );
@@ -157,17 +235,16 @@ CALL maint.sp_orchestrate_vacuum(
 
 ```text
 INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
 INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
 INFO:  =========================================================
-INFO:      [>] LANZANDO [BALANCED] PID 765786 -> lab.demo_extreme_bloat
-INFO:      [✓] EXITO -> lab.demo_extreme_bloat
+INFO:      [>] LANZANDO [BALANCED] PID 2337750 -> lab.demo_escudo_historial
+INFO:      [✓] SUCCESS -> lab.demo_escudo_historial
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 5 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.018093
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 19 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.016945
 INFO:  =========================================================
 CALL
-
 ```
 
 ### Revisar los porcentajes de tuplas muertas
@@ -190,54 +267,51 @@ ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
 **Salida esperada**
 
 ```text
- schemaname |      nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
+ schemaname |     nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
 ------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
- lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00 -- esta no se aplico ya que tiene aplicado un filtro
- lab        | demo_escudo_historial |      100002 |         49999 |            149999 |                      33.33 |             150.00
- lab        | demo_vip_facturas     |      100000 |          9999 |             59999 |                       9.09 |              60.00
+ lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00
  lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
+ lab        | demo_vip_facturas     |       50000 |             0 |             59999 |                       0.00 |             120.00
+ lab        | demo_escudo_historial |       50001 |             0 |            149999 |                       0.00 |             299.99
 (4 rows)
-
 ```
 
 # Escenario 2 : Mantenimiento modificando el p_force_dead_tuples a 40000
 
-aqui lo que vamos hacer es forzar el mantenimiento para las tabla que tengan igual o más de 40,000 filas muertas sin importar el % .
-por lo que las tablas que cumplen esta condicion son demo_heavy_updates y demo_escudo_historial, pero la tabla demo_heavy_updates no se va hacer
-porque esta ignorada por los mantenimientos en maint.filters, asi que la unica tabla que se va ser es lab.demo_escudo_historial
+
 
 ```sql
----- Mantenimiento a todas las tablas Forzado
+-- la tabla demo_heavy_updates antes estaba forzada, ahora la colocamos en custom o lo podemos tambien eliminar, y como no se configuro el action_params
+-- entonces este se toma de los valores por default del orquestador
+update maint.filters set filter_type= 'CUSTOM' where table_name ='demo_heavy_updates';
+
 CALL maint.sp_orchestrate_vacuum(
     p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
     p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
     p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
     p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
     p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-    p_threshold_pct  => 60,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
+    p_threshold_pct  => 70,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
     p_min_dead_tuples   => 5000,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-    p_force_dead_tuples => 40000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
+    p_force_dead_tuples => 400000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
     p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
 );
-
-
 ```
 
 **Salida esperada**
 
 ```text
 INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
+INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD (V4.1.0 HOMOLOGADO - EXT: 1.4)
 INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
 INFO:  =========================================================
-INFO:      [>] LANZANDO [BALANCED] PID 858608 -> lab.demo_escudo_historial
-INFO:      [✓] EXITO -> lab.demo_escudo_historial
+INFO:      [>] LANZANDO [BALANCED] PID 2338239 -> lab.demo_heavy_updates
+INFO:      [✓] SUCCESS -> lab.demo_heavy_updates
 INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 15 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.016101
+INFO:  [✓] ORQUESTACION FINALIZADA. Job 21 | Tablas procesadas: 1 / 1
+INFO:  Tiempo Total: 00:00:01.015826
 INFO:  =========================================================
 CALL
-
 ```
 
 ### Revisar los porcentajes de tuplas muertas
@@ -260,169 +334,16 @@ ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
 **Salida esperada**
 
 ```text
- schemaname |      nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
+ schemaname |     nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
 ------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
- lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00
- lab        | demo_vip_facturas     |      100000 |          9999 |             59999 |                       9.09 |              60.00
- lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
- lab        | demo_escudo_historial |       50001 |             0 |            149999 |                       0.00 |             299.99
-(4 rows)
-
-```
-
-# Escenario 3 : Mantenimiento revisando el funcionamiento de p_min_dead_tuples
-
-en este escenario colocaremos un porcentaje de 5% y una restriccion de minimo 10,000 filas muertas para que aplique el mantenimiento.
-para esto la tabla demo_vip_facturas es buen candidato porque tiene 9.09% pero tiene 9999 tuplas muertas asi que al ejecutar el mantenimiento
-no deberia de arrojar nada
-
-```sql
----- Mantenimiento a todas las tablas Forzado
-CALL maint.sp_orchestrate_vacuum(
-    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
-    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
-    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
-    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-    p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
-    p_min_dead_tuples   => 10000,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-    p_force_dead_tuples => 40000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
-    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
-);
-
-
-```
-
-**Salida esperada**
-
-```text
-INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
-INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
-INFO:  =========================================================
-INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 16 | Tablas procesadas: 0 / 0 (Sistema optimo)
-INFO:  Tiempo Total: 00:00:00.006706
-INFO:  =========================================================
-CALL
-
-```
-
-### Revisar los porcentajes de tuplas muertas
-
-```sql
-SELECT
-    schemaname,
-    relname AS nombre_tabla,
-    n_live_tup AS filas_vivas,
-    n_dead_tup AS filas_muertas,
-    n_mod_since_analyze AS filas_modificadas,
-    ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas_vacuum,
-    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct_analyze
-FROM pg_stat_user_tables
-WHERE      schemaname  = 'lab' and relname in('demo_extreme_bloat','demo_heavy_updates','demo_vip_facturas','demo_escudo_historial')
-ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
-
-```
-
-**Salida esperada**
-
-```text
- schemaname |      nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
-------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
- lab        | demo_heavy_updates    |      200000 |        400000 |            400000 |                      66.67 |             200.00
- lab        | demo_vip_facturas     |      100000 |          9999 |             59999 |                       9.09 |              60.00
- lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
- lab        | demo_escudo_historial |       50001 |             0 |            149999 |                       0.00 |             299.99
-(4 rows)
-
-```
-
-#### Escenario : Cambiaremos el filtro de vacuum a analyze
-
-al hacer esto ya nos permitira hacer vacuum a esa tabla demo_heavy_updates .
-
-```sql
-update maint.filters set maintenance_action = 'ANALYZE' where table_name = 'demo_heavy_updates';
--- UPDATE 1
-
-```
-
-**Salida esperada**
-
-```sql
-select * from  maint.filters ;
- filter_id | schema_name |     table_name     | maintenance_action | is_ignored | force_maintenance |           created_at           |           updated_at           | updated_by 
------------+-------------+--------------------+--------------------+------------+-------------------+--------------------------------+-------------------------------+------------
-         1 | lab         | demo_heavy_updates | ANALYZE            | t          | f                 | 2026-08-24 23:50:54.445692+00 | 2026-08-24 23:50:54.445692+00 | postgres2
-         2 | lab         | demo_extreme_bloat | VACUUM             | f          | t                 | 2026-08-24 23:50:54.445931+00 | 2026-08-24 23:50:54.445931+00 | postgres2
-(2 rows)
-
-```
-
-### Ejecutamos el ultimo mantenimiento
-
-```sql
-CALL maint.sp_orchestrate_vacuum(
-    p_scope          => 'SMART_USER',  -- VARCHAR : Alcance ('SMART_USER', 'ALL_USER', 'CUSTOM_LIST', 'SMART_SYSTEM_USER', 'ALL_SYSTEM_USER', 'ALL_SYSTEM')
-    p_profile        => 'BALANCED',    -- VARCHAR : Perfil de vacuum ('LIGHT', 'BALANCED', 'AGGRESSIVE')
-    p_parallel_workers => 4,           -- INT     : Cantidad máxima de hilos/workers asíncronos en paralelo
-    p_cutoff_time    => NULL,          -- TIME    : Freno de emergencia / Kill-Switch por hora límite (ej. '06:00:00'::TIME; NULL = sin límite)
-    p_verbose        => TRUE,          -- BOOLEAN : Diagnóstico visual en tiempo real en consola (TRUE/FALSE)
-    p_threshold_pct  => 5,          -- NUMERIC : Umbral de porcentaje mínimo de tuplas muertas (5.00 = 5% de muertas)
-    p_min_dead_tuples   => 10000,          -- INT     : Cantidad mínima de tuplas muertas para evaluar (Filtro anti-morralla)
-    p_force_dead_tuples => 40000,         -- INT     : Fuerza la entrada si la tabla supera esta cantidad de tuplas muertas (NULL para desactivar)
-    p_keep_history   => TRUE           -- BOOLEAN : Retención de auditoría en vacuum_tasks (FALSE = Purga la cola al finalizar)
-);
-
-```
-
-**Salida esperada**
-
-```sql
-INFO:  =========================================================
-INFO:  [DBA SQUAD] INICIANDO ORQUESTADOR VACUUM VANGUARD
-INFO:  ALCANCE: SMART_USER | PERFIL: BALANCED | HILOS: 4 | CUTOFF: SIN LIMITE | HISTORIAL: t
-INFO:  =========================================================
-INFO:      [>] LANZANDO [BALANCED] PID 859442 -> lab.demo_heavy_updates
-INFO:      [✓] EXITO -> lab.demo_heavy_updates
-INFO:  ---------------------------------------------------------
-INFO:  [✓] ORQUESTACION FINALIZADA. Job 17 | Tablas procesadas: 1 / 1
-INFO:  Tiempo Total: 00:00:01.015611
-INFO:  =========================================================
-CALL
-
-```
-
-### Validamos las tuplas muertas
-
-```sql
-SELECT
-    schemaname,
-    relname AS nombre_tabla,
-    n_live_tup AS filas_vivas,
-    n_dead_tup AS filas_muertas,
-    n_mod_since_analyze AS filas_modificadas,
-    ROUND(COALESCE((n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0)) * 100, 0.00), 2) as porc_tuplas_muertas_vacuum,
-    ROUND((n_mod_since_analyze::numeric / NULLIF(n_live_tup, 0)) * 100, 2) AS change_pct_analyze
-FROM pg_stat_user_tables
-WHERE      schemaname  = 'lab' and relname in('demo_extreme_bloat','demo_heavy_updates','demo_vip_facturas','demo_escudo_historial')
-ORDER BY porc_tuplas_muertas_vacuum DESC NULLS LAST;
-
-```
-
-**Salida esperada**
-
-```text
- schemaname |      nombre_tabla      | filas_vivas | filas_muertas | filas_modificadas | porc_tuplas_muertas_vacuum | change_pct_analyze 
-------------+-----------------------+-------------+---------------+-------------------+----------------------------+--------------------
- lab        | demo_vip_facturas     |      100000 |          9999 |             59999 |                       9.09 |              60.00
  lab        | demo_extreme_bloat    |       50000 |             0 |            950000 |                       0.00 |            1900.00
  lab        | demo_heavy_updates    |      200000 |             0 |            400000 |                       0.00 |             200.00
+ lab        | demo_vip_facturas     |       50000 |             0 |             59999 |                       0.00 |             120.00
  lab        | demo_escudo_historial |       50001 |             0 |            149999 |                       0.00 |             299.99
 (4 rows)
-
 ```
+
+
 
 ---
 
@@ -438,20 +359,18 @@ select
  tables_processed,
  started_at,
  ended_at
-FROM maint.jobs where started_at::date = current_date order by job_id;
+FROM maint.jobs where started_at::date = current_date and maintenance_action = 'VACUUM' order by job_id limit 2;
 
 ```
 
 **Salida esperada**
 
 ```sql
- job_id |      job_type       | maintenance_action | orchestrator_pid |  status   | tables_processed |          started_at           |            ended_at           
---------+---------------------+--------------------+------------------+-----------+------------------+-------------------------------+-------------------------------
-     14 | SMART_USER_BALANCED | VACUUM             |           855252 | COMPLETED |                1 | 2026-08-25 16:52:35.453886+00 | 2026-08-25 16:52:36.468628+00
-     15 | SMART_USER_BALANCED | VACUUM             |           855252 | COMPLETED |                1 | 2026-08-25 17:13:43.485141+00 | 2026-08-25 17:13:44.498766+00
-     16 | SMART_USER_BALANCED | VACUUM             |           855252 | COMPLETED |                0 | 2026-08-25 17:18:54.430487+00 | 2026-08-25 17:18:54.435994+00
-     17 | SMART_USER_BALANCED | VACUUM             |           855252 | COMPLETED |                1 | 2026-08-25 17:22:27.681069+00 | 2026-08-25 17:22:28.69433+00
-
+ job_id |       job_type       | maintenance_action | orchestrator_pid |  status   | tables_processed |          started_at           |           ended_at            
+--------+----------------------+--------------------+------------------+-----------+------------------+-------------------------------+-------------------------------
+     12 | CUSTOM_LIST_BALANCED | VACUUM             |          2322100 | COMPLETED |                1 | 2026-09-20 14:53:25.321376-07 | 2026-09-20 14:53:26.338042-07
+     13 | CUSTOM_LIST_BALANCED | VACUUM             |          2322100 | COMPLETED |                1 | 2026-09-20 14:54:04.185718-07 | 2026-09-20 14:54:05.198631-07
+(2 rows)
 ```
 
 # Validaremos el detalle de cada proceso ejecutado
@@ -459,17 +378,17 @@ FROM maint.jobs where started_at::date = current_date order by job_id;
 Aqui revisaremos la tabla que se le aplico mantenimiento, la hora inicio y fin, el estatus y mas.
 
 ```sql
-select * FROM maint.vacuum_tasks  where  job_id = 17 ;
+select * FROM maint.vacuum_tasks  where  job_id = 12 ;
 
 ```
 
 **Salida esperada**
 
 ```text
- task_id | job_id | schema_name |     table_name     | n_live_tup | n_dead_tup | dead_tuples_pct | status  | child_pid |          started_at           |            ended_at           | error_log 
----------+--------+-------------+--------------------+------------+------------+-----------------+---------+-----------+-------------------------------+-------------------------------+-----------
-      14 |     17 | lab         | demo_heavy_updates |     200000 |     400000 |           66.67 | SUCCESS |    859442 | 2026-08-25 17:22:27.687482+00 | 2026-08-25 17:22:28.692742+00 | 
-
+ task_id | job_id | schema_name |     table_name     | n_live_tup | n_dead_tup | dead_tuples_pct | status  | child_pid | child_cookie |          started_at           |           ended_at           | error_log 
+---------+--------+-------------+--------------------+------------+------------+-----------------+---------+-----------+--------------+-------------------------------+------------------------------+-----------
+       1 |     12 | lab         | demo_extreme_bloat |      50000 |     450000 |           90.00 | SUCCESS |   2335476 |              | 2026-09-20 14:53:25.327911-07 | 2026-09-20 14:53:26.33543-07 | 
+(1 row)
 ```
 
 ---
