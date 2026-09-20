@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS maint.config (
 -- Inserción idempotente de parámetros operativos y límites de trabajadores
 INSERT INTO maint.config (name, setting, maintenance_action, unit, setting_desc) 
 VALUES 
-  ('max_parallel_vacuum_workers', '30', 'VACUUM', 'workers', 'Límite máximo dinámico de workers concurrentes para VACUUM estándar')
+  ('max_parallel_vacuum_workers', '20', 'VACUUM', 'workers', 'Límite máximo dinámico de workers concurrentes para VACUUM estándar')
 ON CONFLICT (name, maintenance_action) DO NOTHING;
 
 COMMENT ON TABLE maint.config IS 'Configuración maestra de la instancia para límites de I/O, Workers, Ámbito Multi-DB y Seguridad en Disco.';
