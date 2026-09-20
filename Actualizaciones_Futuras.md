@@ -3,59 +3,6 @@
 # PROPUESTAS DE MEJORAS O ACTUALIZACIONES  FUTURAS: 
 
 
-## **1. MÓDULO 1: REFACTORIZACIÓN DEL MODELO DE CONTROL (`maint.filters`)**
-
-### **A. Jerarquía de Reglas de Negocio Integrada**
-
-El control de inclusión, exclusión y personalización de mantenimiento se regirá por la siguiente jerarquía inquebrantable de 3 reglas:
-
-1. **Regla 1 (Exclusión Absoluta):** Si `is_ignored = TRUE` (o `filter_type = 'EXCLUDE'/'DISABLED'`), la tabla **nunca** se procesa bajo ninguna circunstancia.
-2. **Regla 2 (Fuerza Bruta / Override Total):** Si `force_maintenance = TRUE` (o `filter_type = 'FORCE'`), la tabla **siempre** entra a la cola de procesamiento, ignorando tanto los umbrales globales del orquestador como cualquier umbral específico.
-3. **Regla 3 (Umbral Específico por Tabla via `action_params`):** Si `force_maintenance = FALSE` e `is_ignored = FALSE` (o `filter_type = 'CUSTOM'`), el orquestador evalúa los umbrales específicos configurados dentro del campo `action_params` (`JSONB`). Si el parámetro está en `NULL` o ausente dentro del JSON, **hereda automáticamente el parámetro global** pasado al orquestador.
-
----
-
-### **B. DDL Refactorizado y Estructura Polimórfica (`JSONB` + `filter_type`)**
-
-*Por: Marcos (Arquitectura) y Mauricio (QA & Gobierno)*
-
-Sustituimos el modelo de columnas sueltas por un campo `action_params` tipo `JSONB` extensible a todos los módulos (`ANALYZE`, `VACUUM`, `REINDEX`) y un enum de control unificado `filter_type`.
-
-```sql
--- DDL UNIFICADO DE CONTROL DE FILTROS (V4.0.0)
-CREATE TABLE IF NOT EXISTS maint.filters (
-    filter_id SERIAL PRIMARY KEY,
-    schema_name VARCHAR(255) NOT NULL,
-    table_name VARCHAR(255) NOT NULL,
-    maintenance_action VARCHAR(50) NOT NULL DEFAULT 'ALL',
-    filter_type VARCHAR(20) NOT NULL DEFAULT 'CUSTOM',
-    is_ignored BOOLEAN NOT NULL DEFAULT FALSE,          -- Mantenido para retrocompatibilidad V3.x
-    force_maintenance BOOLEAN NOT NULL DEFAULT FALSE,   -- Mantenido para retrocompatibilidad V3.x
-    action_params JSONB NULL,                            -- Contenedor de umbrales específicos
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    updated_by VARCHAR(100) DEFAULT current_user,
-
-    CONSTRAINT uq_maintenance_filters_schema_table_action 
-        UNIQUE (schema_name, table_name, maintenance_action),
-    CONSTRAINT chk_valid_maintenance_action CHECK (
-        maintenance_action IN ('ALL', 'VACUUM', 'VACUUM_FULL', 'ANALYZE', 'REINDEX')
-    ),
-    CONSTRAINT chk_valid_filter_type CHECK (
-        filter_type IN ('DISABLED', 'EXCLUDE', 'FORCE', 'CUSTOM')
-    )
-);
-
--- Ejemplos de configuración en action_params JSONB:
--- ANALYZE:      '{"threshold_pct": 1.5, "min_mod_tuples": 500, "force_mod_tuples": 10000}'
--- VACUUM FULL:  '{"max_dead_tuple_pct": 20.0, "min_dead_tuples": 5000}'
--- REINDEX:      '{"bloat_factor_pct": 30.0, "min_leaf_pages": 1000}'
-
-```
-
----
-
-
  
 ## **2. Alertamiento Activo vía `NOTIFY` (Integración Externa)**
 
