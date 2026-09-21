@@ -10,7 +10,7 @@
 
 
 -- -----------------------------------------------------------------------------------------
--- 1. 📡 MÓDULO TRIAGE RADAR (Construcción de Telemetría Sostenida - DIARIO Y HOMOLOGADO)
+-- 1. 📡 MÓDULO METRICAS - VACUUM FULL (Construcción de Telemetría Sostenida - DIARIO Y HOMOLOGADO)
 -- -----------------------------------------------------------------------------------------
 -- Recolecta la métrica de bloat diario sin realizar mantenimiento. Necesario para alimentar 
 -- la tabla maint.pgstattuple y validar la regla p_sustained_days del VACUUM FULL.
@@ -72,7 +72,7 @@ SELECT cron.schedule_in_database(
 
 SELECT cron.schedule_in_database(
     'maint_analyze_madrugada_diario',
-    '0 4 * * 0-5',                              -- Domingo a Viernes a las 04:00 AM (Excluye Sábados)
+    '0 4 * * 1-6',                              -- Lunes a Sabado a las 04:00 AM (Excluye Sábados)
     $$CALL maint.sp_orchestrate_analyze(
         p_scope             => 'SMART_USER',     -- Alcance: Estadísticas de esquemas de usuario
         p_profile           => 'NORMAL',         -- Perfil: Analiza con muestra estándar del sistema
@@ -101,7 +101,7 @@ SELECT cron.schedule_in_database(
 
 SELECT cron.schedule_in_database(
     'maint_vacuum_full_mayor_sabados',
-    '0 1 * * 6',                               -- Sábados a la 01:00 AM
+    '30 02 * * 0',                               -- Domingos a la 02:30 AM
     $$
     DO $block$
     BEGIN
@@ -159,7 +159,7 @@ SELECT cron.schedule_in_database(
 
 SELECT cron.schedule_in_database(
     'maint_reindex_domingos',
-    '0 1 * * 0',                               -- Domingos a la 01:00 AM
+    '30 02 * * 6',                               -- Sabados a la 02:30 AM
     $$CALL maint.sp_orchestrate_reindex(
         p_scope               => 'SMART_USER',     -- Alcance: Todos los índices de usuario a evaluación
         p_profile             => 'CONCURRENT',     -- Perfil: Reconstrucción online Cero-Bloqueo
