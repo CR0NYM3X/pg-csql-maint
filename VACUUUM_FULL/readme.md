@@ -56,32 +56,51 @@ Guarda el registro acumulado de escaneos de tuplas y espacio libre a nivel de Ki
 Permite definir excepciones de seguridad (Listas Negras) o autorizaciones directas (Listas Blancas/VIP):
 
 ```sql
--- RESTRICCIÓN (Escudo Activo / Lista Negra): Prohibir cirugía mayor sobre la tabla 'historico_logs'
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, is_ignored)
-VALUES ('public', 'historico_logs', 'VACUUM_FULL', TRUE)
-ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET is_ignored = EXCLUDED.is_ignored;
+INSERT INTO maint.filters (
+    schema_name, 
+    table_name, 
+    maintenance_action, 
+    filter_type, 
+    action_params
+) VALUES 
+-- [REGLA 1 - EXCLUSIÓN ABSOLUTA]: Intocable. Jamás entra a mantenimiento ni genera telemetría.
+('lab', 'demo_extreme_bloat', 'VACUUM_FULL', 'EXCLUDE', NULL),
 
--- OBLIGATORIEDAD (Pase VIP / Lista Blanca): Permitir cirugía directa por demanda sobre 'facturas'
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance)
-VALUES ('public', 'facturas', 'VACUUM_FULL', TRUE)
-ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET force_maintenance = EXCLUDED.force_maintenance;
+-- [REGLA 2 - FUERZA BRUTA / OVERRIDE]: Entra directamente a la cola ignorando todo cálculo.
+('lab', 'demo_vip_facturas', 'VACUUM_FULL', 'FORCE', NULL),
 
+-- [REGLA 3 - UMBRAL ESPECÍFICO JSONB]: Carga el 100% de los parámetros de tabla homologados.
+('lab', 'demo_heavy_updates', 'VACUUM_FULL', 'CUSTOM', '{"bloat_pct_threshold":15.0,"bloat_mb_threshold":100.0,"threshold_operator":"AND","sustained_days":3,"force_bloat_mb":500.0}'::jsonb)
 ```
 
 ---
 
-## 🎛️ Parámetros Principales de Ejecución
+### 🎯 **COMPORTAMIENTO `p_scope` PARA `sp_orchestrate_vacuum_full**`
 
-El orquestador `maint.sp_orchestrate_vacuum_full` evalúa el alcance, el perfil operativo y las reglas de degradación sostenida antes de enviar una tabla a cirugía.
+A diferencia de otros módulos de mantenimiento, `VACUUM FULL` ejecuta el **Radar de Triage (`sp_pgstattuple`)** y la **Evaluación del Histórico (`sustained_days`)** para decidir de forma inteligente si una tabla requiere o no reescritura física.
 
-### 🎯 Ámbitos de Cobertura (`p_scope`)
+A continuación se presenta la matriz de comportamiento oficial del orquestador para `VACUUM FULL`:
 
-| Valor | Descripción | ¿Requiere Evaluación Histórica? |
-| --- | --- | --- |
-| **`SMART_USER`** *(Default)* | Procesa tablas de esquemas de usuario (excluye catálogos de sistema y el esquema `maint`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
-| **`SMART_SYSTEM_USER`** | Evalúa tablas de usuario y catálogos internos de PostgreSQL. | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
-| **`SMART_SYSTEM`** | Restringe la evaluación a catálogos del motor (`pg_catalog`, `information_schema`). | ✅ **SÍ** (Evalúa historial de `p_sustained_days`) |
-| **`CUSTOM_LIST`** | Procesa únicamente las tablas con `force_maintenance = TRUE` en `maint.filters`. | ❌ **NO** (Si se ejecuta con `FORCE_SURGERY`) |
+| `p_scope` | `filter_type = 'EXCLUDE'` | `filter_type = 'FORCE'` | `filter_type = 'CUSTOM'` + JSONB | Tablas no registradas en `maint.filters` |
+| --- | --- | --- | --- | --- |
+| **`CUSTOM_LIST`** | 🚫 **NUNCA entra** | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(O parámetros globales si JSONB es NULL)* | ❌ **Ignorada** *(Solo procesa las registradas)* |
+| **`SMART_USER`** *(Default)* | 🚫 **NUNCA entra** | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre esquemas de usuario)* | 📊 **Evalúa parámetros globales + Radar** *(Solo esquemas de usuario)* |
+| **`SMART_SYSTEM`** | 🚫 **NUNCA entra** | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre catalogos del sistema)* | 📊 **Evalúa parámetros globales + Radar** *(Solo catalogos `pg_catalog`/`information_schema`)* |
+| **`SMART_SYSTEM_USER`** | 🚫 **NUNCA entra** | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre toda la base de datos)* | 📊 **Evalúa parámetros globales + Radar** *(Toda la base de datos)* |
+
+---
+
+### 📌 **NOTAS DE INGENIERÍA SOBRE LA MATRIZ DE `VACUUM FULL**`
+
+1. **Ausencia de modos `ALL_*` en `sp_orchestrate_vacuum_full`:**
+En la suite **VANGUARD BLACK-OPS**, el procedimiento `VACUUM FULL` no expone ámbitos ciegos de fuerza bruta global (como `ALL_USER` o `ALL_SYSTEM`) por motivos de **seguridad extrema de I/O y bloqueo exclusivo (`AccessExclusiveLock`)**. Si se requiere forzar la cirugía masiva sobre tablas específicas sin pasar por el radar, se debe utilizar `p_scope = 'CUSTOM_LIST'` registrando las tablas objetivo con `filter_type = 'FORCE'` o compilar una lista limpia en `maint.filters`.
+2. **Diferencia entre `EXCLUDE` y `CUSTOM` con umbrales altos:**
+* **`EXCLUDE`:** Descarte absoluto. La tabla es omitida por el radar; **no genera registros diarios en `maint.pgstattuple**`.
+* **`CUSTOM` con umbrales inalcanzables:** Mantiene la observabilidad. La tabla **sí genera telemetría diaria en `maint.pgstattuple**`, pero el orquestador nunca activará la reescritura física.
+
+
+ 
+
 
 ### ⚙️ Perfiles de Ejecución (`p_profile`)
 
@@ -99,25 +118,61 @@ Debido al uso de `AccessExclusiveLock`, la ejecución debe programarse en ventan
 ### MÉTODO 1: Programación Nocturna Automatizada (Vía `pg_cron`) 🌙
 
 ```sql
--- Programa la revisión y cirugía mayor nocturna a las 01:00 AM
-SELECT cron.schedule_in_database('vanguard_daily_vacuum_full', '0 1 * * *',
-$$   CALL maint.sp_orchestrate_vacuum_full(       p_scope                 => 'SMART_USER',       -- Alcance ('SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST')       p_profile               => 'SMART',            -- Modo ('SMART' o 'FORCE_SURGERY')       p_parallel_workers      => 1,                  -- Hilos paralelos (Tope de seguridad: 1 a 2)       p_cutoff_time           => '05:00:00'::TIME,   -- Hora límite / Kill-Switch (05:00 AM)       p_kill_active_on_cutoff => TRUE,               -- Interrupción activa de procesos RUNNING al alcanzar cutoff (SIGINT -> SIGTERM -> Detach)       p_verbose               => FALSE,              -- Salida de diagnóstico en consola       p_bloat_pct_threshold   => 25.00,              -- Umbral de \% de bloat (>= 25\%)       p_bloat_mb_threshold    => 1024.00,            -- Umbral de bloat en MB (>= 1 GB)       p_threshold_operator    => 'OR',               -- Compuerta lógica ('OR' / 'AND')       p_sustained_days        => 5,                  -- Días consecutivos requeridos en el radar, para desactivarlo coloca 1       p_min_table_mb          => 50.00,              -- Tamaño mínimo de tabla a evaluar (>= 50 MB)       p_force_bloat_mb        => NULL,               -- Bypass por tamaño masivo en MB (NULL = Desactivado)       p_enable_deep_scan      => FALSE,              -- Escaneo profundo bloque a bloque       p_keep_history          => TRUE                -- Retención de auditoría en vacuum_full_tasks   ); $$
-,
-'mi_base_de_datos', 'postgres', true);
-
+-- [CRON JOB]: Revisión y cirugía mayor nocturna programada a las 01:00 AM
+SELECT cron.schedule_in_database(
+    'vanguard_daily_vacuum_full',
+    '0 1 * * *',
+    $$
+    CALL maint.sp_orchestrate_vacuum_full(
+        p_scope                 => 'SMART_USER',     -- 'SMART_USER', 'SMART_SYSTEM_USER', 'SMART_SYSTEM', 'CUSTOM_LIST'
+        p_profile               => 'SMART',          -- 'SMART' (Radar+Histórico) o 'FORCE_SURGERY' (Ciego)
+        p_parallel_workers      => 1,                -- Hilos paralelos (Tope dinámico según maint.config)
+        p_cutoff_time           => '05:00:00'::TIME, -- Hora límite / Kill-Switch (05:00 AM)
+        p_kill_active_on_cutoff => TRUE,             -- Cancelación/Terminación activa al alcanzar el cutoff
+        p_verbose               => FALSE,            -- Salida de diagnóstico en consola
+        p_bloat_pct_threshold   => 25.00,            -- Umbral de porcentaje de bloat (>= 25%)
+        p_bloat_mb_threshold    => 1024.00,          -- Umbral de bloat en MB (>= 1 GB)
+        p_threshold_operator    => 'OR',             -- Compuerta lógica ('OR' / 'AND')
+        p_sustained_days        => 5,                -- Días consecutivos requeridos en el radar
+        p_min_table_mb          => 50.00,            -- Tamaño mínimo de tabla a evaluar (>= 50 MB)
+        p_force_bloat_mb        => NULL,             -- Bypass por tamaño en MB (NULL = Desactivado)
+        p_enable_deep_scan      => FALSE,            -- Escaneo profundo bloque a bloque (FALSE = Aprox)
+        p_keep_history          => TRUE              -- Retención de auditoría en vacuum_full_tasks
+    );
+    $$,
+    'mi_base_de_datos',
+    'postgres',
+    TRUE
+);
 ```
 
 ### MÉTODO 2: Ejecución Asíncrona bajo Demanda (Vía `pg_background`) ⚡
 
 ```sql
--- Lanza el orquestador en segundo plano sin congelar la terminal interactiva del DBA
+-- [EJECUCIÓN MANUAL ASÍNCRONA]: Invocación vía pg_background
 SELECT * FROM public.pg_background_launch(
-    $$CALL maint.sp_orchestrate_vacuum_full(         p_scope                 => 'SMART_USER',         p_profile               => 'SMART',         p_parallel_workers      => 1,         p_cutoff_time           => NULL,         p_kill_active_on_cutoff => FALSE,         p_verbose               => TRUE,         p_bloat_pct_threshold   => 25.00,         p_bloat_mb_threshold    => 1024.00,         p_threshold_operator    => 'OR',         p_sustained_days        => 5,         p_min_table_mb          => 50.00,         p_force_bloat_mb        => 5000.00,        -- Bypass de emergencia: Tablas con >= 5 GB de bloat entran directo         p_enable_deep_scan      => FALSE,         p_keep_history          => TRUE     );$$
+    $$
+    CALL maint.sp_orchestrate_vacuum_full(
+        p_scope                 => 'SMART_USER',
+        p_profile               => 'SMART',
+        p_parallel_workers      => 1,
+        p_cutoff_time           => NULL,             -- Sin hora límite
+        p_kill_active_on_cutoff => FALSE,
+        p_verbose               => TRUE,             -- Diagnóstico detallado en logs
+        p_bloat_pct_threshold   => 25.00,
+        p_bloat_mb_threshold    => 1024.00,
+        p_threshold_operator    => 'OR',
+        p_sustained_days        => 5,
+        p_min_table_mb          => 50.00,
+        p_force_bloat_mb        => 5000.00,          -- Bypass de emergencia: Tablas con >= 5 GB de bloat entran directo
+        p_enable_deep_scan      => FALSE,
+        p_keep_history          => TRUE
+    );
+    $$
 );
 
--- Obtener el resultado del proceso hijo mediante su PID devuelto:
+-- Para obtener el resultado del proceso hijo mediante el PID devuelto:
 -- SELECT * FROM public.pg_background_result(PID_OBTENIDO) AS (result TEXT);
-
 ```
 
 ---
