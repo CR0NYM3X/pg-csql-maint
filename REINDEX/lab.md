@@ -80,11 +80,21 @@ ANALYZE lab.demo_index_escudo;
 -- ====================================================================================
 DELETE FROM maint.filters WHERE schema_name = 'lab';
 
-INSERT INTO maint.filters (schema_name, table_name, is_ignored, force_maintenance, maintenance_action) VALUES 
-('lab', 'demo_index_escudo', TRUE,  FALSE, 'REINDEX'), -- [ESCUDO ACTIVO]: Intocable por el orquestador.
-('lab', 'demo_index_vip',     FALSE, TRUE,  'REINDEX'); -- [PASE VIP]: Mantenimiento prioritario / Cirugía Ciega.
+INSERT INTO maint.filters (
+    schema_name, 
+    table_name, 
+    maintenance_action, 
+    filter_type, 
+    action_params
+) VALUES 
+-- [REGLA 1 - EXCLUSIÓN ABSOLUTA]: Intocable. Jamás entra a mantenimiento ni genera telemetría.
+('lab', 'demo_escudo_historial', 'REINDEX', 'EXCLUDE', NULL),
 
+-- [REGLA 2 - FUERZA BRUTA / OVERRIDE]: Entra directamente a la cola ignorando todo cálculo.
+('lab', 'demo_index_vip', 'REINDEX', 'FORCE', NULL),
 
+-- [REGLA 3 - UMBRAL ESPECÍFICO JSONB]: Carga el 100% de los parámetros de índice homologados.
+('lab', 'demo_index_bloat', 'REINDEX', 'CUSTOM', '{"frag_pct_threshold":30.0,"bloat_pct_threshold":15.0,"bloat_mb_threshold":10.0,"threshold_operator":"OR"}'::jsonb);
 
 ```
 
