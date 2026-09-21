@@ -77,6 +77,19 @@ INSERT INTO maint.filters (
 ```
 
 ---
+### 🎯 MATRIZ DE COMPORTAMIENTO p_scope
+
+La siguiente tabla define el comportamiento exacto de **REINDEX CONCURRENTLY** en el orquestador bajo la arquitectura **V4.1.0 (Grado Diamante)**:
+
+| `p_scope` | `filter_type = 'EXCLUDE'` | `filter_type = 'FORCE'` | `filter_type = 'CUSTOM'` + JSONB | Tablas no registradas en `maint.filters` |
+| --- | --- | --- | --- | --- |
+| **`CUSTOM_LIST`** | 🚫 **NUNCA entra** *(Escudo Absoluto)* | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(En tiempo real sin histórico)* | ❌ **Ignorada** *(Solo procesa las registradas)* |
+| **`SMART_USER`** *(Default)* | 🚫 **NUNCA entra** *(Escudo Absoluto)* | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre esquemas de usuario)* | 📊 **Evalúa parámetros globales + Radar** *(Solo esquemas de usuario)* |
+| **`SMART_SYSTEM`** | 🚫 **NUNCA entra** *(Escudo Absoluto)* | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre catálogos del sistema)* | 📊 **Evalúa parámetros globales + Radar** *(Solo catálogos `pg_catalog`/`information_schema`)* |
+| **`SMART_SYSTEM_USER`** | 🚫 **NUNCA entra** *(Escudo Absoluto)* | ⚡ **Entra DIRECTO** *(Fuerza Bruta)* | 🎯 **Evalúa parámetros JSONB** *(Sobre toda la base de datos)* | 📊 **Evalúa parámetros globales + Radar** *(Toda la base de datos)* |
+
+
+---
 
 ## 🎛️ Parámetros Principales de Ejecución
 
