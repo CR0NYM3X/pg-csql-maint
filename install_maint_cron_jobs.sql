@@ -100,7 +100,7 @@ SELECT cron.schedule_in_database(
 -- Encapsulado en un bloque DO $$ para forzar la actualización masiva de estadísticas al finalizar.
 
 SELECT cron.schedule_in_database(
-    'maint_vacuum_full_mayor_sabados',
+    'maint_vacuum_full_mayor_domingo',
     '30 02 * * 0',                               -- Domingos a la 02:30 AM
     $$
     DO $block$
@@ -158,7 +158,7 @@ SELECT cron.schedule_in_database(
 -- Flexible pero controlado, dado que no bloquea pero genera un volumen alto de I/O en disco.
 
 SELECT cron.schedule_in_database(
-    'maint_reindex_domingos',
+    'maint_reindex_sabados',
     '30 02 * * 6',                               -- Sabados a la 02:30 AM
     $$CALL maint.sp_orchestrate_reindex(
         p_scope               => 'SMART_USER',     -- Alcance: Todos los índices de usuario a evaluación
