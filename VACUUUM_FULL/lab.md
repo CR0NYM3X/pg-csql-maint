@@ -111,7 +111,7 @@ INSERT INTO maint.filters (
 -- [REGLA 1 - EXCLUSIÓN ABSOLUTA]: Intocable. Jamás entra a mantenimiento.
 (
     'lab', 
-    'demo_escudo_historial', 
+    'demo_extreme_bloat', 
     'VACUUM_FULL', 
     'EXCLUDE', 
     NULL
@@ -357,32 +357,29 @@ ORDER BY  total_bloat_kb DESC, table_name desc , evaluation_date asc;
 **Salida esperada**
 
 ```text
- evaluation_date | schema_name |      table_name       | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
------------------+-------------+-----------------------+----------------+----------------+-----------------+-------------
- 2026-09-10      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
- 2026-09-11      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
- 2026-09-12      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
- 2026-09-13      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
- 2026-09-14      | lab         | demo_extreme_bloat    |    23989588.69 |       23427.33 |           89.96 | f
+ evaluation_date | schema_name |     table_name     | total_bloat_kb | total_bloat_mb | total_bloat_pct | requires_vf 
+-----------------+-------------+--------------------+----------------+----------------+-----------------+-------------
 
- 2026-09-10      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
- 2026-09-11      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
- 2026-09-12      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
- 2026-09-13      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
- 2026-09-14      | lab         | demo_heavy_updates    |        7614.53 |           7.44 |           49.81 | t
+-- esta si cumple con la condiciones  pero esta bloqueada 
+ 2026-09-16      | lab         | demo_extreme_bloat |    23989588.69 |       23427.33 |           89.96 | t
+ 2026-09-17      | lab         | demo_extreme_bloat |    23989588.69 |       23427.33 |           89.96 | t
+ 2026-09-18      | lab         | demo_extreme_bloat |    23989588.69 |       23427.33 |           89.96 | t
+ 2026-09-19      | lab         | demo_extreme_bloat |    23989588.69 |       23427.33 |           89.96 | t
+ 2026-09-20      | lab         | demo_extreme_bloat |    23989588.69 |       23427.33 |           89.96 | t
 
- 2026-09-10      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-09-11      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-09-12      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-09-13      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-09-14      | lab         | demo_escudo_historial |        2349.72 |           2.29 |           49.87 | f
- 2026-09-10      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-09-11      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-09-12      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-09-13      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
- 2026-09-14      | lab         | demo_vip_facturas     |         511.34 |           0.50 |           20.04 | f
-(20 rows)
+ 2026-09-16      | lab         | demo_heavy_updates |        7614.53 |           7.44 |           49.81 | f
+ 2026-09-17      | lab         | demo_heavy_updates |        7614.53 |           7.44 |           49.81 | f
+ 2026-09-18      | lab         | demo_heavy_updates |        7614.53 |           7.44 |           49.81 | f
+ 2026-09-19      | lab         | demo_heavy_updates |        7614.53 |           7.44 |           49.81 | f
+ 2026-09-20      | lab         | demo_heavy_updates |        7614.53 |           7.44 |           49.81 | f
 
+--- Esta la incluyo en true porque esta forzada 
+ 2026-09-16      | lab         | demo_vip_facturas  |         511.34 |           0.50 |           20.04 | t
+ 2026-09-17      | lab         | demo_vip_facturas  |         511.34 |           0.50 |           20.04 | t
+ 2026-09-18      | lab         | demo_vip_facturas  |         511.34 |           0.50 |           20.04 | t
+ 2026-09-19      | lab         | demo_vip_facturas  |         511.34 |           0.50 |           20.04 | t
+ 2026-09-20      | lab         | demo_vip_facturas  |         511.34 |           0.50 |           20.04 | t
+(15 rows)
 ```
 
 ### Colocar un tamaño de disco chico para que marque el error al hacer el mantenimiento
@@ -486,7 +483,7 @@ Esto bloqueara la tabla por completo lo cual impedira que el orquestador se bloq
 ```sql
 update maint.config set setting = '1000' where name = 'disk_total_size_gb';
 BEGIN;
-LOCK TABLE lab.demo_heavy_updates IN SHARE UPDATE EXCLUSIVE MODE;
+LOCK TABLE lab.demo_vip_facturas IN SHARE UPDATE EXCLUSIVE MODE;
 SELECT clock_timestamp()::time;
 
 ```
