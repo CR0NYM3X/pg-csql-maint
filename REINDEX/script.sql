@@ -9,7 +9,7 @@
                                
    MÓDULO: Suite Completa de Mantenimiento Asíncrono (REINDEX CONCURRENTLY)
    Compatibilidad : Universal (<= pg_background 1.4 y >= 2.0 / Cloud SQL & On-Premise)
-   VERSIÓN: V4.0.0 (Grado Diamante - Dynamic Parameter Interception, Jerarquía JSONB Homologada, Multi-DB Disk Shield & Checksum)
+   VERSIÓN: V4.1.0 (Grado Diamante - Dynamic Parameter Interception, Jerarquía JSONB Homologada, Multi-DB Disk Shield & Checksum)
    ARQUITECTURA: Multi-hilo, Resiliente, Forense, Libre de Subtransacciones.
 ========================================================================================= */
 BEGIN;
@@ -83,7 +83,7 @@ ON maint.jobs (job_type, maintenance_action, job_id DESC);
 COMMENT ON TABLE maint.jobs IS 'Cabecera maestra unificada que registra la ejecución global, estado y parámetros JSONB de cada ciclo de orquestación.';
 
 -- =========================================================================================
--- 2. TABLA DE CONTROL: Reglas y Filtros de Seguridad V4.0.0 (Jerarquía Polimórfica JSONB)
+-- 2. TABLA DE CONTROL: Reglas y Filtros de Seguridad V4.1.0 (Jerarquía Polimórfica JSONB)
 -- =========================================================================================
 CREATE TABLE IF NOT EXISTS maint.filters (
     filter_id SERIAL PRIMARY KEY,                               
@@ -113,7 +113,6 @@ CREATE TABLE IF NOT EXISTS maint.filters (
     )
 );
 
-
 CREATE INDEX IF NOT EXISTS idx_filters_action_params_gin 
 ON maint.filters USING gin (action_params);
 
@@ -131,7 +130,7 @@ CREATE TRIGGER trg_filters_audit
     BEFORE UPDATE ON maint.filters
     FOR EACH ROW EXECUTE FUNCTION maint.trg_update_filters_audit();
 
-COMMENT ON TABLE maint.filters IS 'Control maestro unificado V4.0.0. Soporta conservación y reutilización de action_params JSONB.';
+COMMENT ON TABLE maint.filters IS 'Control maestro unificado V4.1.0. Soporta conservación y reutilización de action_params JSONB.';
 COMMENT ON COLUMN maint.filters.filter_type IS 'Tipo de regla: EXCLUDE (Regla 1 - NUNCA procesar), FORCE (Regla 2 - SIEMPRE procesar), CUSTOM (Regla 3 - Evaluar JSONB/Global).';
 COMMENT ON COLUMN maint.filters.action_params IS 'Parámetros JSONB específicos con nombres homologados al orquestador (frag_pct_threshold, bloat_pct_threshold, bloat_mb_threshold, threshold_operator, force_frag_pct, force_bloat_mb).';
 
@@ -206,7 +205,7 @@ CREATE INDEX IF NOT EXISTS idx_reindex_tasks_job_status_id
 ON maint.reindex_tasks (job_id, status, task_id);
 
 -- =========================================================================================
--- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V4.0.0 Blindado contra Corrupción)
+-- 5. PROCEDIMIENTO: RADAR DE ÍNDICES (maint.sp_pgstatindex V4.1.0 Blindado contra Corrupción)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_pgstatindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
@@ -225,7 +224,7 @@ DECLARE
     v_today DATE := current_date; 
     v_processed INT := 0; v_sniped INT := 0;
 
-    -- Variables para evaluación de umbrales dinámicos homologados V4.0.0
+    -- Variables para evaluación de umbrales dinámicos homologados V4.1.0
     v_effective_frag_pct_threshold NUMERIC(12,2);
     v_effective_bloat_pct_threshold NUMERIC(12,2);
     v_effective_bloat_mb_threshold NUMERIC(14,2);
@@ -248,7 +247,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES V4.0.0 HOMOLOGADO (LOGIC: % | FRAG: %%% | BLOAT: %%% / % MB | FORCE_MB: %)', 
+        RAISE INFO '[DBA SQUAD] RADAR DE ÍNDICES V4.1.0 HOMOLOGADO (LOGIC: % | FRAG: %%% | BLOAT: %%% / % MB | FORCE_MB: %)', 
                    v_op_upper, p_frag_pct_threshold, p_bloat_pct_threshold, p_bloat_mb_threshold, COALESCE(p_force_bloat_mb::TEXT, 'OFF');
         RAISE INFO '=========================================================';
     END IF;
@@ -264,7 +263,13 @@ BEGIN
           AND n.nspname <> 'pg_toast' AND n.nspname <> 'maint' -- ESCUDO ACTIVO
           AND pg_relation_size(i.indexrelid) >= (p_min_index_mb * 1024 * 1024)
           AND COALESCE(mf.filter_type, 'CUSTOM') <> 'EXCLUDE' -- REGLA 1: Exclusión Absoluta
-          AND ((p_scope = 'CUSTOM_LIST' AND mf.filter_type = 'FORCE') OR (p_scope = 'SMART_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'SMART_SYSTEM_USER') OR (p_scope = 'SMART_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema')))
+          AND (
+              -- [CORRECCIÓN V4.1.0]: CUSTOM_LIST procesa TANTO 'FORCE' COMO 'CUSTOM'
+              (p_scope = 'CUSTOM_LIST' AND mf.filter_type IN ('FORCE', 'CUSTOM')) OR 
+              (p_scope = 'SMART_USER' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) OR 
+              (p_scope = 'SMART_SYSTEM_USER') OR 
+              (p_scope = 'SMART_SYSTEM' AND n.nspname IN ('pg_catalog', 'information_schema'))
+          )
     ) LOOP
         BEGIN
             v_size_kb := ROUND((r_idx.size_bytes / 1024.0)::numeric, 2);
@@ -378,7 +383,7 @@ $$;
 REVOKE EXECUTE ON PROCEDURE maint.sp_pgstatindex FROM PUBLIC;
 
 -- =========================================================================================
--- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V4.0.0 (Multi-DB Universal Sanitizado)
+-- 6. ORQUESTADOR QUIRÚRGICO: maint.sp_orchestrate_reindex V4.1.0 (Multi-DB Universal Sanitizado)
 -- =========================================================================================
 CREATE OR REPLACE PROCEDURE maint.sp_orchestrate_reindex(
     p_scope VARCHAR DEFAULT 'SMART_USER',
@@ -410,7 +415,7 @@ DECLARE
     v_force_bloat_kb NUMERIC(14,2) := CASE WHEN p_force_bloat_mb IS NOT NULL THEN (p_force_bloat_mb * 1024.0) ELSE NULL END;
     v_force_bypass BOOLEAN := FALSE;
     
-    -- Variables para evaluación de umbrales dinámicos homologados V4.0.0
+    -- Variables para evaluación de umbrales dinámicos homologados V4.1.0
     v_effective_frag_pct_threshold NUMERIC(12,2);
     v_effective_bloat_pct_threshold NUMERIC(12,2);
     v_effective_bloat_mb_threshold NUMERIC(14,2);
@@ -552,7 +557,7 @@ BEGIN
 
     IF p_verbose THEN
         RAISE INFO '=========================================================';
-        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V4.0.0 HOMOLOGADO - EXT: %)', COALESCE(v_ext_version, 'v1.x');
+        RAISE INFO '[DBA SQUAD] INICIANDO ORQUESTACIÓN REINDEX VANGUARD (V4.1.0 HOMOLOGADO - EXT: %)', COALESCE(v_ext_version, 'v1.x');
         RAISE INFO 'ALCANCE: % | HILOS: % | CUTOFF: % | REBUILD ZOMBIS: %', p_scope, p_parallel_workers, COALESCE(p_cutoff_time::TEXT, 'SIN LIMITE'), p_rebuild_invalid;
         RAISE INFO 'PRE-VALIDACIÓN DISCO: % GB | MARGEN: % GB | WAL_FACTOR: % | TARGET_DBS: %', 
                    CASE WHEN v_disk_total_size_gb <= 0 THEN 'DESACTIVADO (-1)' ELSE v_disk_total_size_gb::TEXT END, 
@@ -586,7 +591,7 @@ BEGIN
     COMMIT; 
 
     -- =====================================================================
-    -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint, Jerarquía V4.0.0 e Integridad Sanitizada)
+    -- 3. POBLAR COLA SILENCIOSAMENTE (Con Escudo Maint, Jerarquía V4.1.0 e Integridad Sanitizada)
     -- =====================================================================
     FOR r_idx IN (
         SELECT t.schema_name, t.table_name, t.index_name, t.total_bloat_kb, t.total_bloat_pct, t.leaf_fragmentation_pct, t.is_invalid,
@@ -595,7 +600,13 @@ BEGIN
         LEFT JOIN maint.filters mf ON mf.schema_name = t.schema_name AND mf.table_name = t.table_name AND mf.maintenance_action IN ('ALL', 'REINDEX')
         WHERE t.evaluation_date = CURRENT_DATE AND t.schema_name <> 'maint' 
           AND COALESCE(mf.filter_type, 'CUSTOM') <> 'EXCLUDE' -- REGLA 1: Exclusión Absoluta
-          AND ((p_scope = 'CUSTOM_LIST' AND mf.filter_type = 'FORCE') OR (p_scope = 'SMART_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR (p_scope = 'SMART_SYSTEM_USER') OR (p_scope = 'SMART_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema')))
+          AND (
+              -- [CORRECCIÓN V4.1.0]: CUSTOM_LIST procesa TANTO 'FORCE' COMO 'CUSTOM'
+              (p_scope = 'CUSTOM_LIST' AND mf.filter_type IN ('FORCE', 'CUSTOM')) OR 
+              (p_scope = 'SMART_USER' AND t.schema_name NOT IN ('pg_catalog', 'information_schema')) OR 
+              (p_scope = 'SMART_SYSTEM_USER') OR 
+              (p_scope = 'SMART_SYSTEM' AND t.schema_name IN ('pg_catalog', 'information_schema'))
+          )
     ) LOOP
 
         IF v_profile_upper = 'FORCE_SURGERY' OR r_idx.filter_type = 'FORCE' THEN
@@ -646,14 +657,25 @@ BEGIN
 
             v_force_bypass := ((v_effective_force_frag_pct IS NOT NULL AND r_idx.leaf_fragmentation_pct >= v_effective_force_frag_pct) OR (v_effective_force_bloat_kb IS NOT NULL AND r_idx.total_bloat_kb >= v_effective_force_bloat_kb));
 
-            -- EVALUACIÓN MATEMÁTICA EN POBLADO DE COLA
-            IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR (
-                (v_effective_threshold_operator = 'AND' AND r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold AND r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold) OR
-                (v_effective_threshold_operator = 'OR'  AND (r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold OR r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold))
-            ) THEN
-                INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
-                VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
-                v_total_tasks := v_total_tasks + 1;
+            -- [CORRECCIÓN V4.1.0]: EVALUACIÓN DIRECTA DE UMBRALES EN CUSTOM_LIST O SMART
+            IF p_scope = 'CUSTOM_LIST' THEN
+                IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR (
+                    (v_effective_threshold_operator = 'AND' AND r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold AND r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold) OR
+                    (v_effective_threshold_operator = 'OR'  AND (r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold OR r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold))
+                ) THEN
+                    INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
+                    VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+                    v_total_tasks := v_total_tasks + 1;
+                END IF;
+            ELSE
+                IF (r_idx.is_invalid AND p_rebuild_invalid) OR v_force_bypass OR (
+                    (v_effective_threshold_operator = 'AND' AND r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold AND r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold AND r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold) OR
+                    (v_effective_threshold_operator = 'OR'  AND (r_idx.leaf_fragmentation_pct >= v_effective_frag_pct_threshold OR r_idx.total_bloat_pct >= v_effective_bloat_pct_threshold OR r_idx.total_bloat_kb >= v_effective_bloat_kb_threshold))
+                ) THEN
+                    INSERT INTO maint.reindex_tasks (job_id, schema_name, table_name, index_name, frag_pct, bloat_pct, bloat_kb, is_invalid, status) 
+                    VALUES (v_job_id, r_idx.schema_name, r_idx.table_name, r_idx.index_name, LEAST(r_idx.leaf_fragmentation_pct, 999999999.99), LEAST(r_idx.total_bloat_pct, 999999999.99), r_idx.total_bloat_kb, r_idx.is_invalid, 'PENDING');
+                    v_total_tasks := v_total_tasks + 1;
+                END IF;
             END IF;
         END IF;
 
@@ -715,7 +737,7 @@ BEGIN
                 END;
             END;
             COMMIT; 
-        END LOOP;
+        LOOP;
 
         IF p_cutoff_time IS NOT NULL AND (clock_timestamp()::time) >= p_cutoff_time THEN
             UPDATE maint.reindex_tasks SET status = 'SKIPPED_TIME_LIMIT', error_log = 'Cutoff Time Reached' WHERE job_id = v_job_id AND status = 'PENDING'; COMMIT;
