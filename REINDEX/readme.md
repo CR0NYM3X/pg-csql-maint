@@ -56,16 +56,23 @@ Funciona como el panel de reglas para definir Listas Negras (exclusiones absolut
 **Ejemplos prácticos de configuración de Filtros:**
 
 ```sql
--- RESTRICCIÓN (Lista Negra / Escudo Inmune): Evitar que los índices de la tabla 'historico_logs' sean intervenidos por REINDEX
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, is_ignored) 
-VALUES ('public', 'historico_logs', 'REINDEX', TRUE)
-ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET is_ignored = EXCLUDED.is_ignored;
 
--- FORZADO VIP (Lista Blanca / Francotirador Ciego): Obligar a procesar la tabla 'facturas_vip' cuando se use p_profile = 'FORCE_SURGERY'
-INSERT INTO maint.filters (schema_name, table_name, maintenance_action, force_maintenance) 
-VALUES ('public', 'facturas_vip', 'REINDEX', TRUE)
-ON CONFLICT (schema_name, table_name, maintenance_action) DO UPDATE SET force_maintenance = EXCLUDED.force_maintenance;
 
+INSERT INTO maint.filters (
+    schema_name, 
+    table_name, 
+    maintenance_action, 
+    filter_type, 
+    action_params
+) VALUES 
+-- [REGLA 1 - EXCLUSIÓN ABSOLUTA]: Intocable. Jamás entra a mantenimiento ni genera telemetría.
+('lab', 'demo_escudo_historial', 'REINDEX', 'EXCLUDE', NULL),
+
+-- [REGLA 2 - FUERZA BRUTA / OVERRIDE]: Entra directamente a la cola ignorando todo cálculo.
+('lab', 'demo_index_vip', 'REINDEX', 'FORCE', NULL),
+
+-- [REGLA 3 - UMBRAL ESPECÍFICO JSONB]: Carga el 100% de los parámetros de índice homologados.
+('lab', 'demo_index_bloat', 'REINDEX', 'CUSTOM', '{"frag_pct_threshold":30.0,"bloat_pct_threshold":15.0,"bloat_mb_threshold":10.0,"threshold_operator":"OR"}'::jsonb);
 
 ```
 
